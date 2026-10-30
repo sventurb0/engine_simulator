@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+engine-simulator-v2/vite.config.js
+engine-simulator-v2/vite.config.d.ts
