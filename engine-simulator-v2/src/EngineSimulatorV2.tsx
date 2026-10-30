@@ -1,3 +1,4 @@
+import { expandFactoryPresets, manufacturerReferences } from "./data/factoryEngines";
 import { useEngineAudio, createProceduralSampleBuffer } from "./lib/engineAudio.js";
 import { clamp, lerp, smoothStep, engineLayouts } from "./lib/engineAudioPrimitives";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -33,11 +34,11 @@ type MicPosition = "dyno_room" | "cockpit" | "engine_bay" | "intake_side" | "rea
 type GraphMode = "live" | "dyno";
 type GraphPage = "power" | "diagnostics";
 type DiagnosticMetricKey = "vePct" | "mapKpa" | "chargeTempC" | "airLbMin" | "injectorCc" | "compressorEffPct" | "densityRatio" | "bmepPsi" | "targetAfr" | "pr" | "eventHz";
-type ControlTab = "live" | "engine" | "induction" | "environment" | "audio";
+type ControlTab = "library" | "live" | "engine" | "induction" | "environment" | "audio";
 type FiringSoundMode = "stock" | "even" | "crossplane_i4" | "bigbang_i4" | "cp3_triple" | "bigbang_v4" | "oddfire_v6" | "lopey_v8";
 type ApplicationType = "car";
 
-type SimConfig = {
+export type SimConfig = {
   gameMeta?: { name: string };
   applicationType: ApplicationType;
   engineLayout: EngineLayout;
@@ -124,7 +125,7 @@ type SolvePoint = {
 };
 
 type SweepRow = SolvePoint & { time?: number };
-type EnginePreset = { name: string; config: Partial<SimConfig>; group?: "factory" | "custom" | "saved" };
+export type EnginePreset = { name: string; manufacturer?: string; nominalLitres?: number; setupKind?: "existing" | "illustrative"; config: Partial<SimConfig>; group?: "factory" | "custom" | "saved" };
 
 const PA_TO_PSI = 0.0001450377;
 const KELVIN = 273.15;
@@ -214,7 +215,7 @@ const blowerTypes: Record<BlowerType, { label: string; eff: number; dragScale: n
 };
 
 
-const presets: EnginePreset[] = [
+const legacyPresets: EnginePreset[] = [
   {
     name: "Saabish turbo",
     group: "custom",
@@ -501,6 +502,8 @@ const presets: EnginePreset[] = [
   },
 ];
 
+const presets = expandFactoryPresets(legacyPresets);
+
 const defaultConfig: SimConfig = {
   gameMeta: { name: "Saabish turbo" },
   applicationType: "car",
@@ -610,7 +613,7 @@ const UI = {
   title: "text-xl text-slate-50",
   tabWrap: "grid grid-cols-5 gap-2",
   tabButton: "flex min-h-[42px] items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-2 py-2 text-center text-xs sm:text-sm text-slate-300 transition hover:bg-slate-800 hover:text-slate-100",
-  tabButtonActive: "border-blue-300/60 bg-blue-400 text-slate-950 shadow-[0_0_0_1px_rgba(147,197,253,0.35)]",
+  tabButtonActive: "!border-sky-400/60 !bg-sky-500/20 !text-sky-100 shadow-[0_0_0_1px_rgba(147,197,253,0.35)]",
   select: "rounded-2xl border-slate-700 bg-slate-900 text-slate-100",
   buttonPrimary: "rounded-2xl border border-blue-300/25 bg-blue-400 text-slate-950 hover:bg-blue-300 font-semibold",
   buttonSecondary: "rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 font-medium",
@@ -1347,7 +1350,7 @@ function EngineInfoBar({ config, point }: { config: SimConfig; point: SolvePoint
 
 function ControlTabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button type="button" onClick={onClick} className={`${UI.tabButton} ${active ? UI.tabButtonActive : ""}`}>
+    <button type="button" onClick={onClick} aria-pressed={active} className={`${UI.tabButton} ${active ? UI.tabButtonActive : ""}`}>
       {children}
     </button>
   );
@@ -1443,13 +1446,14 @@ export default function EngineSimulatorV2() {
   const [diagRightMetric, setDiagRightMetric] = useState<DiagnosticMetricKey>("mapKpa");
   const [running, setRunning] = useState(true);
   const [audioEnabled, setAudioEnabled] = useState(false);
-  const [tab, setTab] = useState<ControlTab>("live");
+  const [tab, setTab] = useState<ControlTab>("library");
   const [liveTrace, setLiveTrace] = useState<SweepRow[]>([]);
   const [liveThrottleTarget, setLiveThrottleTarget] = useState(defaultRuntime.throttle);
   const [sweepRunning, setSweepRunning] = useState(false);
   const [sweepCursor, setSweepCursor] = useState(1200);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "downloaded" | "blocked">("idle");
   const [presetSearch, setPresetSearch] = useState("");
+  const [manufacturer, setManufacturer] = useState("Saab");
   const [savePresetName, setSavePresetName] = useState("");
   const [savedPresets, setSavedPresets] = useState<EnginePreset[]>([]);
   const lastLiveTraceSampleRef = useRef(0);
@@ -1465,8 +1469,11 @@ export default function EngineSimulatorV2() {
   const peakBoost = useMemo(() => sweep.reduce((a, b) => (b.boostPsi > a.boostPsi ? b : a), sweep[0]), [sweep]);
   const presetFilter = useMemo(() => presetSearch.trim().toLowerCase(), [presetSearch]);
   const allPresets = useMemo(() => [...presets, ...savedPresets], [savedPresets]);
-  const filteredPresets = useMemo(() => allPresets.filter((preset) => !presetFilter || preset.name.toLowerCase().includes(presetFilter)), [allPresets, presetFilter]);
+  const filteredPresets = useMemo(() => allPresets.filter((preset) => !presetFilter || `${preset.manufacturer ?? ""} ${preset.name} ${preset.config.engineLayout} ${preset.config.induction}`.toLowerCase().includes(presetFilter)), [allPresets, presetFilter]);
   const factoryPresets = useMemo(() => filteredPresets.filter((p) => p.group === "factory"), [filteredPresets]);
+  const manufacturers = useMemo(() => [...new Set(presets.filter(p=>p.group==='factory').map(p=>p.manufacturer!))].sort(), []);
+  const visibleManufacturers = manufacturers.filter(name => (presetFilter || manufacturer === 'all' || name === manufacturer) && factoryPresets.some(p=>p.manufacturer===name));
+  const selectedPreset = presets.find(p=>p.name===config.gameMeta?.name);
   const customPresets = useMemo(() => filteredPresets.filter((p) => p.group === "custom"), [filteredPresets]);
   const userPresets = useMemo(() => filteredPresets.filter((p) => p.group === "saved"), [filteredPresets]);
 
@@ -1582,7 +1589,7 @@ export default function EngineSimulatorV2() {
   const liveTimeStart = useMemo(() => Math.max(0, lastLiveTime - 5), [lastLiveTime]);
 
   const applyPreset = (preset: EnginePreset) => {
-    const nextConfig = sanitizeConfig({ ...config, ...preset.config, gameMeta: { name: preset.name }, applicationType: "car" });
+    const nextConfig = sanitizeConfig({ ...defaultConfig, ...preset.config, gameMeta: { name: preset.name }, applicationType: "car" });
     setConfig(nextConfig);
     setRuntime({ ...defaultRuntime, rpm: resolveIdleRpm(nextConfig), throttle: 0 });
     setLiveThrottleTarget(0);
@@ -1690,45 +1697,99 @@ export default function EngineSimulatorV2() {
     <div className={UI.page}>
       <div className="mx-auto grid max-w-7xl gap-6">
         <div className="grid gap-6 lg:grid-cols-[420px_1fr] lg:items-start">
-          <Card className={`${UI.card} lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-hidden`}>
-            <CardHeader>
-              <CardTitle className={UI.title}>Controls</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-4 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto pr-2">
-              <div className={UI.tabWrap}>
-                <ControlTabButton active={tab === "live"} onClick={() => setTab("live")}>Live</ControlTabButton>
-                <ControlTabButton active={tab === "engine"} onClick={() => setTab("engine")}>Engine</ControlTabButton>
-                <ControlTabButton active={tab === "induction"} onClick={() => setTab("induction")}>Induction</ControlTabButton>
-                <ControlTabButton active={tab === "environment"} onClick={() => setTab("environment")}>Environment</ControlTabButton>
-                <ControlTabButton active={tab === "audio"} onClick={() => setTab("audio")}>Audio</ControlTabButton>
+          <Card className={`${UI.card} lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden`}>
+            <CardHeader className="shrink-0 border-b border-slate-700/60 !pb-4">
+              <div className="text-[10px] uppercase tracking-[0.25em] text-sky-400">Apex · Engine laboratory</div>
+              <CardTitle className={UI.title}>{config.gameMeta?.name ?? 'Custom engine'}</CardTitle>
+              <div className="text-xs text-slate-400">{sweepRunning ? 'Full-load dyno sweep in progress' : 'Choose an engine, tune it, then run a sweep.'}</div>
+              <div className="grid grid-cols-[1fr_auto] gap-2 pt-2">
+                <Button className={`${UI.buttonPrimary} !h-12`} onClick={() => sweepRunning ? setSweepRunning(false) : void runSweep()}>
+                  <Gauge className="h-4 w-4" /> {sweepRunning ? 'Stop dyno' : 'Run dyno'}
+                </Button>
+                <Button className={UI.buttonSecondary} variant="secondary" onClick={async () => { if (!audioEnabled) await ensureAudio(); setAudioEnabled(v=>!v); }}>
+                  <Volume2 className="h-4 w-4" /> {audioEnabled ? 'Mute' : 'Audio'}
+                </Button>
               </div>
-
-              {tab === "live" && (
+              <div className="grid grid-cols-3 gap-1 pt-3" role="navigation" aria-label="Simulator sections">
+                <ControlTabButton active={tab === 'library'} onClick={() => setTab('library')}>Library</ControlTabButton>
+                <ControlTabButton active={tab === 'engine'} onClick={() => setTab('engine')}>Engine</ControlTabButton>
+                <ControlTabButton active={tab === 'induction'} onClick={() => setTab('induction')}>Boost</ControlTabButton>
+                <ControlTabButton active={tab === 'live'} onClick={() => setTab('live')}>Drive</ControlTabButton>
+                <ControlTabButton active={tab === 'environment'} onClick={() => setTab('environment')}>Test setup</ControlTabButton>
+                <ControlTabButton active={tab === 'audio'} onClick={() => setTab('audio')}>Sound</ControlTabButton>
+              </div>
+            </CardHeader>
+            <CardContent className="min-h-0 grid gap-4 overflow-y-auto !pt-4 lg:max-h-[calc(100vh-20rem)]">
+              {tab === 'library' && (
                 <div className="grid gap-4">
-                  <div className="grid gap-3 rounded-2xl border border-slate-700/60 bg-slate-900/70 p-3">
-                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px]">
-                      <input value={presetSearch} onChange={(e) => setPresetSearch(e.target.value)} placeholder="Search presets" className="h-10 rounded-xl border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 outline-none ring-0 placeholder:text-slate-500" />
-                      <div className="flex items-center justify-center rounded-xl border border-slate-700 bg-slate-950 px-3 text-xs text-slate-400">{factoryPresets.length + customPresets.length + userPresets.length} preset matches</div>
-                    </div>
-                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_140px_140px]">
-                      <input value={savePresetName} onChange={(e) => setSavePresetName(e.target.value)} placeholder="Preset name" className="h-10 rounded-xl border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 outline-none ring-0 placeholder:text-slate-500" />
-                      <Button className={UI.buttonOutline} variant="outline" onClick={saveCurrentPreset}>Save current</Button>
-                      <Button className={UI.buttonOutline} variant="outline" onClick={() => setSavePresetName("")}>Clear name</Button>
+                  <div className="grid gap-2">
+                    <label htmlFor="engine-search" className="text-xs font-medium text-slate-300">Find an engine</label>
+                    <input id="engine-search" value={presetSearch} onChange={e=>setPresetSearch(e.target.value)} placeholder="Search any make, engine or layout…" className="h-11 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-sm" />
+                    <label htmlFor="manufacturer" className="text-xs font-medium text-slate-300">Manufacturer</label>
+                    <select id="manufacturer" value={presetFilter ? 'all' : manufacturer} onChange={e=>{setManufacturer(e.target.value);setPresetSearch('');}} className="h-11 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-sm">
+                      <option value="all">All manufacturers</option>
+                      {manufacturers.map(name=><option key={name} value={name}>{name} · {presets.filter(p=>p.manufacturer===name).length}</option>)}
+                    </select>
+                    <div className="text-xs text-slate-500">{presets.filter(p=>p.group==='factory').length} examples · {manufacturers.length} manufacturers{presetFilter ? ` · ${factoryPresets.length} matches across all makes` : ''}</div>
+                  </div>
+                  {selectedPreset?.setupKind === 'illustrative' && <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3 text-xs text-amber-200">Approximate setup loaded. Nominal capacity and architecture identify the example; geometry, rev limit and tuning are illustrative.</div>}
+                  <div className="grid gap-3">
+                    {visibleManufacturers.map(make=><details key={`${make}-${manufacturer}-${Boolean(presetFilter)}`} open={manufacturer===make || Boolean(presetFilter)} className="rounded-xl border border-slate-700/70 bg-slate-900/60">
+                      <summary className="cursor-pointer px-3 py-3 text-sm font-semibold text-slate-100">{make} <span className="float-right text-xs font-normal text-slate-400">{factoryPresets.filter(p=>p.manufacturer===make).length} engines</span></summary>
+                      <div className="grid gap-1.5 px-2 pb-3">
+                        {factoryPresets.filter(p=>p.manufacturer===make).map(preset=><button key={preset.name} onClick={()=>applyPreset(preset)} aria-pressed={config.gameMeta?.name===preset.name} className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${config.gameMeta?.name===preset.name ? 'border-sky-500/60 bg-sky-500/10' : 'border-transparent bg-slate-950/50 hover:border-slate-600'}`}>
+                          <span className="block text-sm font-medium text-slate-100">{preset.name}</span>
+                          <span className="mt-1 block text-[11px] text-slate-400">{preset.nominalLitres?.toFixed(1)} L · {engineLayouts[preset.config.engineLayout!]?.label} · {preset.config.induction==='na'?'Naturally aspirated':preset.config.induction==='turbo'?'Turbocharged':'Supercharged'}{preset.setupKind==='illustrative'?' · Approx. setup':''}</span>
+                        </button>)}
+                        {manufacturerReferences[make] && <a className="px-3 pt-2 text-xs text-sky-400 hover:underline" href={manufacturerReferences[make].url} target="_blank" rel="noreferrer">{manufacturerReferences[make].label} ↗</a>}
+                      </div>
+                    </details>)}
+                    {!visibleManufacturers.length && <p className="text-sm text-slate-400">No factory examples match. Try an engine code or manufacturer.</p>}
+                  </div>
+                  <details className="rounded-xl border border-slate-700/60 p-3 text-xs text-slate-400"><summary className="cursor-pointer">About these examples</summary><p className="mt-2">Real engine families and named factory applications, with approximate simulator setups. New entries use nominal displacement and estimated square bore/stroke geometry. Rev limits, boost, compression and tuning require individual verification. Published output is not a calibration target. Related applications can share an engine family. Manufacturer links are background references, not verification of every setting.</p></details>
+                  <div className="rounded-2xl border border-slate-700/60 bg-slate-900/70 p-3 grid gap-3">
+                    <div className="text-sm font-semibold text-slate-200">Custom and tuned examples</div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {customPresets.map((preset) => (
+                        <Button key={preset.name} variant="secondary" className={`${UI.buttonSecondary} justify-start`} onClick={() => applyPreset(preset)}>
+                          {preset.name}
+                        </Button>
+                      ))}
                     </div>
                   </div>
+                  <div className="rounded-2xl border border-slate-700/60 bg-slate-900/70 p-3 grid gap-3">
+                    <div className="text-sm font-semibold text-slate-200">Saved presets</div>
+                    {userPresets.length ? (
+                      <div className="grid gap-2">
+                        {userPresets.map((preset) => (
+                          <div key={preset.name} className="grid grid-cols-[minmax(0,1fr)_90px] gap-2">
+                            <Button variant="secondary" className={`${UI.buttonSecondary} justify-start`} onClick={() => applyPreset(preset)}>{preset.name}</Button>
+                            <Button variant="outline" className={UI.buttonOutline} onClick={() => deleteSavedPreset(preset.name)}>Delete</Button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : <div className="text-xs text-slate-400">No saved presets yet.</div>}
+                  </div>
+
+                  <details className="rounded-xl border border-slate-700/60 p-3"><summary className="cursor-pointer text-sm text-slate-300">Save or export your setup</summary>
+                    <div className="mt-3 grid gap-2">
+                      <input value={savePresetName} onChange={e=>setSavePresetName(e.target.value)} placeholder="Name your setup" aria-label="Preset name" className="h-10 rounded-xl border border-slate-700 bg-slate-950 px-3 text-sm" />
+                      <Button className={UI.buttonOutline} variant="outline" onClick={saveCurrentPreset}>Save current</Button>
+                      <div className="grid grid-cols-2 gap-2"><Button variant="outline" onClick={exportConfigFile}>Export JSON</Button><Button variant="outline" onClick={copyConfigJson}>Copy JSON</Button></div>
+                      {copyStatusText && <span className="text-xs text-slate-400">{copyStatusText}</span>}
+                    </div>
+                  </details>
+                </div>
+              )}
+              {tab === "live" && (
+                <div className="grid gap-4">
+                  <p className="text-xs text-slate-400">Move the throttle to free-rev, or use Run dyno above for a full-load sweep.</p>
                   <LabeledSlider label="Throttle" value={runtime.throttle * 100} onChange={(v) => updateRuntime("throttle", v / 100)} min={0} max={100} display={`${fmt(runtime.throttle * 100, 0)} %`} />
                   <div className="grid grid-cols-2 gap-3">
                     <Button className={UI.buttonPrimary} onClick={() => setRunning((v) => !v)}>
                       {running ? <Pause className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />} {running ? "Pause sim" : "Resume sim"}
                     </Button>
-                    <Button className={UI.buttonSecondary} variant="secondary" onClick={async () => {
-                      if (!audioEnabled) {
-                        await ensureAudio();
-                      }
-                      setAudioEnabled((v) => !v);
-                    }}>
-                      <Volume2 className="mr-2 h-4 w-4" /> {audioEnabled ? "Audio on" : "Start audio"}
-                    </Button>
+
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <Button className={UI.buttonOutline} variant="outline" onClick={() => {
@@ -1757,42 +1818,7 @@ export default function EngineSimulatorV2() {
                     <Button className={UI.buttonOutline} variant="outline" onClick={copyConfigJson}>Copy JSON</Button>
                   </div>
                   {copyStatusText ? <div className="text-xs text-slate-300">{copyStatusText}</div> : null}
-                  <div className="rounded-2xl border border-slate-700/60 bg-slate-900/70 p-3 grid gap-3">
-                    <div className="text-sm font-semibold text-slate-200">Factory engine library</div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {factoryPresets.map((preset) => (
-                        <Button key={preset.name} variant="secondary" className={`${UI.buttonSecondary} justify-start`} onClick={() => applyPreset(preset)}>
-                          {preset.name}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-slate-700/60 bg-slate-900/70 p-3 grid gap-3">
-                    <div className="text-sm font-semibold text-slate-200">Custom and tuned examples</div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {customPresets.map((preset) => (
-                        <Button key={preset.name} variant="secondary" className={`${UI.buttonSecondary} justify-start`} onClick={() => applyPreset(preset)}>
-                          {preset.name}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-slate-700/60 bg-slate-900/70 p-3 grid gap-3">
-                    <div className="text-sm font-semibold text-slate-200">Saved presets</div>
-                    {userPresets.length ? (
-                      <div className="grid gap-2">
-                        {userPresets.map((preset) => (
-                          <div key={preset.name} className="grid grid-cols-[minmax(0,1fr)_90px] gap-2">
-                            <Button variant="secondary" className={`${UI.buttonSecondary} justify-start`} onClick={() => applyPreset(preset)}>{preset.name}</Button>
-                            <Button variant="outline" className={UI.buttonOutline} onClick={() => deleteSavedPreset(preset.name)}>Delete</Button>
-                          </div>
-                        ))}
-                      </div>
-                    ) : <div className="text-xs text-slate-400">No saved presets yet.</div>}
-                  </div>
-                  <Button className={UI.buttonOutline} variant="outline" onClick={runSweep}>
-                    <Gauge className="mr-2 h-4 w-4" /> Run dyno sweep
-                  </Button>
+
                 </div>
               )}
 
@@ -1979,7 +2005,7 @@ export default function EngineSimulatorV2() {
                     <LabeledSlider label="Cam aggression" value={config.camAggression * 100} onChange={(v) => updateConfig("camAggression", v / 100)} min={0} max={100} display={`${fmt(config.camAggression * 100, 0)} %`} />
                     <LabeledSlider label="Exhaust flow trim" value={config.exhaustFlow * 100} onChange={(v) => updateConfig("exhaustFlow", v / 100)} min={0} max={100} display={`${fmt(config.exhaustFlow * 100, 0)} %`} />
                     <LabeledSlider label="Top-end flow bias" value={config.topEndFlowBias * 100} onChange={(v) => updateConfig("topEndFlowBias", v / 100)} min={0} max={100} display={`${fmt(config.topEndFlowBias * 100, 0)} %`} />
-                    <LabeledSlider label="RPM cutoff" value={config.redline} onChange={(v) => updateConfig("redline", v)} min={5000} max={18000} step={100} display={`${fmt(config.redline, 0)} rpm`} />
+                    <LabeledSlider label="RPM cutoff" value={config.redline} onChange={(v) => updateConfig("redline", v)} min={4000} max={18000} step={100} display={`${fmt(config.redline, 0)} rpm`} />
                   </div>
                 </div>
               )}
