@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { acousticProfileFor } from "./engineAcousticProcessor";
 import { acousticRoomBuffer } from "./engineAcousticRoom";
 
-import { blowerVoice, releaseVoice, recoverFireTime } from "./engineAudioDynamics";
+import { turboVoice, blowerVoice, releaseVoice, recoverFireTime } from "./engineAudioDynamics";
 
 import { clamp, lerp, smoothStep, engineLayouts } from "./engineAudioPrimitives";
 
@@ -519,6 +519,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
     };
 
     const turboHiss = makeNoiseLayer("bandpass", 2400, 1.9, airBus);
+    const turboWhine = makeNoiseLayer("bandpass", 4200, 12, airBus);
     const intakeWind = makeNoiseLayer("bandpass", 780, 0.9, intakeBus);
     const mechBed = makeNoiseLayer("bandpass", 2500, 2.2, blockBus);
 
@@ -544,7 +545,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
 
     const sampleBuffers = Object.fromEntries(PRIVATE_AUDIO_SAMPLE_KEYS.map((key) => [key, createProceduralSampleBuffer(ctx, key)]));
     ctxRef.current = ctx;
-    nodesRef.current = { ctx, exhaustBus, intakeBus, blockBus, acousticRoom, acousticRoomSend, blowerOsc, blowerGain, blowerHarmonic, blowerHarmonicGain, master, micHp, micLp, roomSend, roomReturn, exhaustRes, intakeRes, blockRes, turboHiss, intakeWind, mechBed, turboOsc, turboGain, combustionBuffer, oldV8CombustionBuffer, i4CombustionBuffers, noiseBuffer, fxBus, sampleBuffers };
+    nodesRef.current = { ctx, exhaustBus, intakeBus, blockBus, acousticRoom, acousticRoomSend, blowerOsc, blowerGain, blowerHarmonic, blowerHarmonicGain, master, micHp, micLp, roomSend, roomReturn, exhaustRes, intakeRes, blockRes, turboHiss, turboWhine, intakeWind, mechBed, turboOsc, turboGain, combustionBuffer, oldV8CombustionBuffer, i4CombustionBuffers, noiseBuffer, fxBus, sampleBuffers };
     nextFireTimeRef.current = ctx.currentTime + 0.04;
     patternIndexRef.current = 0;
     audioSmoothRef.current = { ...stateRef.current.point };
@@ -796,11 +797,13 @@ export function useEngineAudio(config, point, enabled, throttle) {
         localNodes.blockRes.filters[1].gain.gain.setTargetAtTime((activeAudio * 0.020 + (profile.mechanicalGain || 0.02) * 0.035) * blockGainScale, localCtx.currentTime, 0.08);
         localNodes.blockRes.filters[2].gain.gain.setTargetAtTime((activeAudio * 0.012 + profileTopTick * 0.012) * blockGainScale, localCtx.currentTime, 0.08);
 
-        localNodes.turboHiss.filter.frequency.setTargetAtTime(1600 + boostNorm * 3600, localCtx.currentTime, 0.06);
-        const turboHissGain = localConfig.induction === "turbo" && boostNorm > 0.12 && throttleAudio > 0.22 ? (0.001 + (useAcoustics ? 0.015 : (profile.whistleBias || 0)) * 0.006 + (localConfig.turboLoudness || 0.7) * 0.007) * Math.pow(boostNorm, 1.25) * mic.air : 0;
-        localNodes.turboHiss.gain.gain.setTargetAtTime(turboHissGain, localCtx.currentTime, 0.08);
-        localNodes.turboOsc.frequency.setTargetAtTime(1600 + boostNorm * 4100, localCtx.currentTime, 0.10);
-        localNodes.turboGain.gain.setTargetAtTime(0, localCtx.currentTime, 0.12);
+        const compressor=turboVoice(localConfig,localPoint,throttleAudio,localCtx.sampleRate);
+        localNodes.turboHiss.filter.frequency.setTargetAtTime(compressor.frequency*.7,localCtx.currentTime,.08);
+        localNodes.turboHiss.gain.gain.setTargetAtTime(compressor.hissGain*mic.air,localCtx.currentTime,.08);
+        localNodes.turboWhine.filter.frequency.setTargetAtTime(compressor.frequency,localCtx.currentTime,.10);
+        localNodes.turboWhine.gain.gain.setTargetAtTime(compressor.whineGain*mic.air,localCtx.currentTime,.10);
+        localNodes.turboOsc.frequency.setTargetAtTime(compressor.frequency*.78,localCtx.currentTime,.12);
+        localNodes.turboGain.gain.setTargetAtTime(compressor.toneGain*mic.air,localCtx.currentTime,.12);
         localNodes.intakeWind.filter.frequency.setTargetAtTime(650 + localPoint.rpm * 0.07 + localThrottle * 500, localCtx.currentTime, 0.08);
         localNodes.intakeWind.gain.gain.setTargetAtTime(!useAcoustics && throttleAudio > 0.38 ? ((throttleAudio - 0.38) * 0.010 + (profile.intakeBias || 0) * 0.002) * mic.intake : 0, localCtx.currentTime, 0.08);
         localNodes.mechBed.filter.frequency.setTargetAtTime(profile.mechanicalFreq + localPoint.rpm * 0.04, localCtx.currentTime, 0.06);
@@ -992,5 +995,6 @@ export function useEngineAudio(config, point, enabled, throttle) {
 export function useApexEngineAudio({ config, point, enabled, throttle, pageActive }) {
   return useEngineAudio(config, point, Boolean(enabled && pageActive), throttle);
 }
+
 
 

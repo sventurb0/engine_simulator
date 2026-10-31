@@ -30,3 +30,16 @@ export function releaseVoice(config, strength) {
 
 // Missed pulses must be skipped rather than replayed in a burst after a UI stall.
 export const recoverFireTime = (next, now) => next < now + 0.005 ? now + 0.005 : next;
+
+
+// Loaded compressor sound: pressure ratio and per-turbo airflow proxy control
+// frequency/energy. Blade-pass frequency is an approximation without a speed map.
+export function turboVoice(config,point,throttle,sampleRate=48000) {
+ const level=clamp(config.turboLoudness??.7,0,1.8),boost=Math.max(0,point.boostPsi??0);
+ const pressure=clamp(boost/14.5,0,2),flow=clamp((point.airLbMin??0)/(config.turboCount??1)/25,0,2);
+ const loaded=clamp(throttle,0,1)*Math.sqrt(pressure)*(.4+.6*Math.sqrt(flow));
+ const enclosure=config.airCleaner==='open_filter'||config.airCleaner==='trumpets'?1.3:.85;
+ const amount=config.induction==='turbo'?level*loaded*enclosure:0;
+ const frequency=clamp(1700+2600*Math.sqrt(pressure)+900*Math.sqrt(flow),1000,Math.min(8500,sampleRate*.2));
+ return {frequency,hissGain:amount*.060,whineGain:amount*.090,toneGain:amount*.0020};
+}

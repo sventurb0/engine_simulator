@@ -63,7 +63,7 @@ export class EngineAcousticModel {
     this.transitionL=this.lastL??0;this.transitionR=this.lastR??0;
     this.transitionI=this.lastI??0;this.transitionM=this.lastM??0;this.active=0;
     this.profile=profile;this.slot=0;this.phase=0;this.index=0;
-    this.slow=new Float64Array(profile.cylinders);this.fast=new Float64Array(profile.cylinders);
+    this.slow=new Float64Array(profile.cylinders);this.fast=new Float64Array(profile.cylinders);this.pulseDecay=new Float64Array(profile.cylinders);
     this.bufferSize=Math.max(4096,2**Math.ceil(Math.log2(this.sr*.05)));
     this.lines=Array.from({length:profile.cylinders},()=>new Float32Array(this.bufferSize));
     this.collectors=[new Float32Array(this.bufferSize),new Float32Array(this.bufferSize)];
@@ -123,14 +123,20 @@ export class EngineAcousticModel {
         const limiter=this.rpm>=p.redline-50 && Math.floor(this.events/p.cylinders)%2===0?0:1;
         const amplitude=(.20+this.load*.80)*this.fuel*variation*volume*limiter;
         this.lastPulseAmplitude=amplitude;
+        if(!p.turbo)this.pulseDecay[cylinder]=Math.exp(-1/(sr*p.pulseMs*.001*(1+this.noise()*.06*p.texture)));
         this.injectorEnv+=this.fuel;
         this.slow[cylinder]+=amplitude;this.fast[cylinder]+=amplitude;
         this.slot=(this.slot+1)%p.cylinders;this.events++;
       }
       let bank0=0,bank1=0,intakeExcitation=0;
       for(let c=0;c<p.cylinders;c++){
-        this.slow[c]*=slowDecay;this.fast[c]*=fastDecay;
-        const pulse=this.slow[c]-this.fast[c];
+        this.slow[c]*=this.pulseDecay[c]||slowDecay;this.fast[c]*=fastDecay;
+        // Exhaust blowdown includes turbulent broadband energy. NA high-speed
+        // pulses should not be identical electronic waveforms; turbine damping
+        // retains the approved turbo combustion character.
+        const envelope=this.slow[c]-this.fast[c];
+        const turbulence=p.turbo?0:(.025+.045*this.load)*p.texture;
+        const pulse=envelope*(1+(turbulence?this.noise()*turbulence:0));
         const line=this.lines[c];line[this.index]=pulse;
         const d=delays[c]+p.banks[c]*.25*sr/speed,r=reflections[c];
         const arriving=read(line,this.index,d)-.32*read(line,this.index,d+r)+.10*read(line,this.index,d+r*2);

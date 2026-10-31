@@ -35,7 +35,9 @@ for(const profile of m.engineCalibrations){
    const prior=nm(rpm,interpolate(factors,rpm));
    // Gentle parabolic envelopes place maxima at their published RPMs.
    // Their curvature is an explicit modelling assumption, not source data.
-   const tqCeiling=torque.torqueNm*(1-.15*((rpm-torque.rpm)/c.redline)**2);
+   const plateau=profile.points.filter(p=>p.basis==='torque-rating'&&p.torqueNm===torque.torqueNm).map(p=>p.rpm);
+   const distance=rpm<Math.min(...plateau)?rpm-Math.min(...plateau):rpm>Math.max(...plateau)?rpm-Math.max(...plateau):0;
+   const tqCeiling=torque.torqueNm*(1-.15*(distance/c.redline)**2);
    const hpCeiling=powerNmRpm/rpm*(1-.25*((rpm-power.rpm)/c.redline)**2);
    const target=anchors.get(rpm)??Math.min(prior,tqCeiling,hpCeiling);
    inferred.push([rpm,fit(rpm,target)]);
@@ -48,3 +50,4 @@ for(const profile of m.engineCalibrations){
  console.log(profile.id, `${factors.length} fixed charge coefficients`);
 }
 fs.writeFileSync(root+'src/data/engineCalibrationFits.json',JSON.stringify(fits)+'\n');fs.unlinkSync(out);
+

@@ -293,7 +293,9 @@ export function expandFactoryPresets(legacy: EnginePreset[]): EnginePreset[] {
         exhaustFlow:redline>=8000?0.65:0.45,topEndFlowBias:0.5,
         vvtMode:'none',liftSystem:'none',intakeType:'plenum',runnerLength:redline>=8000?'short':'medium',
         injectionType:'port',fuelType:'premium',exhaustType:'street',headerType:layout==='flat4'?'unequal':'cast',frictionClass:'normal',
-        turboFamily:litres>3?'large':'medium',turboArchitecture:'single',turboBearing:'journal',turbineAR:'medium',
+        turboFamily:'small',turboArchitecture:'single',turboBearing:'journal',turbineAR:'medium',
+        // Stock-road placeholder envelope; no measured turbo sizing is claimed.
+        turboSpoolStartRpm:1200,turboSpoolFullRpm:2800,
         boostControl:0.25,wastegateBasePsi:8,intercoolerType:aspiration==='na'?'none':'small_fmic',
         blowerType:'roots',scBoostCap:8,
       };
@@ -319,3 +321,4 @@ export function expandFactoryPresets(legacy: EnginePreset[]): EnginePreset[] {
   if (existing.size) throw new Error(`Unassigned factory presets: ${[...existing.keys()].join(', ')}`);
   return [...factory,...legacy.filter(p=>p.group!=='factory')];
 }
+

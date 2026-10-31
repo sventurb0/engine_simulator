@@ -44,4 +44,20 @@ for(const preset of m.presets.filter(p=>p.group==='factory')){
  for(let rpm=1500;rpm<c.redline;rpm+=500){const p=m.solveDynoPoint(c,rpm);assert.ok(Number.isFinite(p.brakeHp));assert.ok(Math.abs(p.brakeHp-p.torqueLbFt*p.rpm/5252.11312203255)<1e-6);}
  if(c.induction==='turbo')for(const key of Object.keys(m.compressorMaps))for(let rpm=2000;rpm<c.redline;rpm+=500){const p=m.solveDynoPoint({...c,compressorMap:key},rpm);assert.ok(Number.isFinite(p.chargeTempC));if(p.compressorMapStatus==='sampled'){sampled++;assert.ok(Math.abs(m.mapEfficiency(key,p.correctedAirLbMin,p.pr)-p.compressorEff)<.001);}}
 }
+const m157=m.configForPreset(m.presets.find(p=>p.name==='M157 5.5 biturbo'));
+const early=m.solveDynoPoint(m157,2000),late=m.solveDynoPoint(m157,5000);
+assert.ok(early.boostPsi>12&&early.boostPsi>late.boostPsi*.9,'M157 loaded boost is established at 2000, not redline');
+assert.ok(Math.abs(early.torqueLbFt*1.3558179483314004-800)<.1,'M157 standard-launch torque anchor');
+const saab=m.configForPreset(m.presets.find(p=>p.name==='B234R'));
+assert.ok(m.solveDynoPoint(saab,1200).boostPsi<.1);assert.ok(m.solveDynoPoint(saab,1800).boostPsi<m.solveDynoPoint(saab,2200).boostPsi,'Saab progression is not full boost at 1800');
+for(const preset of m.presets.filter(p=>p.group==='factory'&&p.setupKind==='illustrative'&&p.config.induction==='turbo')){
+ const c=m.configForPreset(preset);assert.ok(m.solveDynoPoint(c,Math.min(c.redline,3000)).boostPsi>3,preset.name+' reasonable placeholder spool');
+}
+const generic={...m157,calibrationEnabled:false,turboSpoolStartRpm:undefined,turboSpoolFullRpm:undefined,turboFamily:'medium',turboCount:1,bore:86,stroke:86,boostOnsetBias:0};
+const little=m.solveDynoPoint(generic,2800).boostPsi;
+const big=m.solveDynoPoint({...generic,bore:108,stroke:108},2800).boostPsi;
+assert.ok(big>little,'same turbo receives more exhaust flow from greater displacement');
+assert.ok(m.solveDynoPoint({...generic,bore:108,stroke:108,turboCount:2},2800).boostPsi<big,'parallel turbos split exhaust flow at fixed turbo size');
+console.log('PASS: M157 early loaded boost and torque, Saab boost progression, all illustrative turbo envelopes.');
 assert.ok(sampled>0);console.log(`PASS: ${count} reference points, fixed-fit responses, both map tables, fallback, units and all factory configurations; ${sampled} sampled map operating points.`);fs.unlinkSync(out);
+

@@ -98,6 +98,9 @@ export type SimConfig = {
   redline: number;
   idleRpm: number;
   turboFamily: TurboFamily;
+  turboCount?: number;
+  turboSpoolStartRpm?: number;
+  turboSpoolFullRpm?: number;
   turboArchitecture: TurboArchitecture;
   turboBearing: TurboBearing;
   turbineAR: TurbineAR;
@@ -601,6 +604,9 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     exhaustType: coerceOption(config.exhaustType, exhaustValues, defaultConfig.exhaustType),
     headerType: coerceOption(config.headerType, headerValues, defaultConfig.headerType),
     frictionClass: coerceOption(config.frictionClass, frictionValues, defaultConfig.frictionClass),
+    turboCount: config.turboCount===2?2:1,
+    turboSpoolStartRpm: Number.isFinite(config.turboSpoolStartRpm)?clamp(config.turboSpoolStartRpm!,600,10000):undefined,
+    turboSpoolFullRpm: Number.isFinite(config.turboSpoolFullRpm)?clamp(config.turboSpoolFullRpm!,800,12000):undefined,
     turboFamily: coerceOption(config.turboFamily, turboFamilyValues, defaultConfig.turboFamily),
     turboArchitecture: coerceOption(config.turboArchitecture, turboArchitectureValues, defaultConfig.turboArchitecture),
     turboBearing: coerceOption(config.turboBearing, turboBearingValues, defaultConfig.turboBearing),
@@ -972,8 +978,12 @@ function solvePoint(config: SimConfig, runtime: RuntimeState, chargeScaleOverrid
   if (config.induction === "turbo") {
     const fam = turboFamilies[config.turboFamily];
     const onsetShift = config.boostOnsetBias;
-    const spoolStart = Math.max(1200, fam.spoolStart + onsetShift + hw.spoolStartAdj);
-    const spoolFull = Math.max(spoolStart + 400, fam.spoolFull + onsetShift + hw.spoolFullAdj);
+    // Family represents compressor/turbine size, not engine displacement.
+    // Scale the 2 L single-turbo reference by exhaust flow per parallel turbo.
+    // This is a steady loaded envelope, not a transient shaft-speed simulation.
+    const flowScale=clamp(Math.pow(2*(config.turboCount??1)/dispL,.65),.45,1.8);
+    const spoolStart = Math.max(600, (config.turboSpoolStartRpm??(fam.spoolStart+hw.spoolStartAdj)*flowScale)+onsetShift);
+    const spoolFull = Math.max(spoolStart + 200, (config.turboSpoolFullRpm??(fam.spoolFull+hw.spoolFullAdj)*flowScale)+onsetShift);
     const spool = smoothStep(rpm, spoolStart, spoolFull);
     const wgLimit = config.wastegateBasePsi + config.boostControl * (config.turboFamily === "small" ? 6 : config.turboFamily === "medium" ? 10 : 14);
     const naturalBoostTarget = wgLimit * spool * Math.pow(throttle, 1.4);
@@ -1019,6 +1029,15 @@ function solvePoint(config: SimConfig, runtime: RuntimeState, chargeScaleOverrid
       preIcTempK=atm.tempK*(1+(Math.pow(pr,(GAMMA_AIR-1)/GAMMA_AIR)-1)/compressorEff);
       const nextTemp=atm.tempK+(preIcTempK-atm.tempK)*(1-icEff);
       chargeTempK=(chargeTempK+nextTemp)/2;
+    }
+    // A map boundary can make the iteration alternate between sampled and
+    // generic efficiency. Never report an unconverged operating point as sampled.
+    const finalFlow=correctedFlow(dispM3*(rpm/120)*ve*(mapKpa*1000)/(R_AIR*chargeTempK)*atm.dryAirFraction*KG_S_TO_LB_MIN,atm.tempK,atm.pressurePa);
+    const finalEfficiency=mapEfficiency(config.compressorMap,finalFlow,pr);
+    if(compressorMapStatus==='sampled'&&(finalEfficiency===null||Math.abs(finalEfficiency-compressorEff)>.0005)){
+      compressorEff=genericEfficiency;compressorMapStatus='outside-sampled-region';
+      preIcTempK=atm.tempK*(1+(Math.pow(pr,(GAMMA_AIR-1)/GAMMA_AIR)-1)/compressorEff);
+      chargeTempK=atm.tempK+(preIcTempK-atm.tempK)*(1-icEff);
     }
   }
 
@@ -1911,6 +1930,10 @@ export default function EngineSimulatorV2() {
                       {activeMap && <div className="text-xs text-slate-400">Manual efficiency samples, approximately ±3 percentage points. Outside the sampled interior, the generic model is used. This does not verify surge, choke, shaft speed or turbine matching. <a className="text-sky-400" href={activeMap.source} target="_blank" rel="noreferrer">Manufacturer map ↗</a></div>}
                       <LabeledSlider label="Boost control" value={config.boostControl * 100} onChange={(v) => updateConfig("boostControl", v / 100)} min={0} max={100} display={`${fmt(config.boostControl * 100, 0)} %`} />
                         <LabeledSlider label="Wastegate spring" value={config.wastegateBasePsi} onChange={(v) => updateConfig("wastegateBasePsi", v)} min={3} max={20} step={0.5} display={`${fmt(config.wastegateBasePsi, 1)} psi`} />
+                        <label className="text-sm">Parallel turbo count<select aria-label="Parallel turbo count" className={UI.select} value={config.turboCount??1} onChange={e=>updateConfig('turboCount',Number(e.target.value))}><option value="1">One · default assumption</option><option value="2">Two parallel turbos</option></select></label>
+                        <label className="text-sm flex gap-2"><input type="checkbox" checked={config.turboSpoolStartRpm!==undefined} onChange={e=>setConfig(c=>({...c,turboSpoolStartRpm:e.target.checked?1200:undefined,turboSpoolFullRpm:e.target.checked?2500:undefined}))}/>Set loaded spool envelope</label>
+                        {config.turboSpoolStartRpm!==undefined && <><LabeledSlider label="Boost starts building" value={config.turboSpoolStartRpm} min={600} max={6000} step={50} onChange={v=>updateConfig('turboSpoolStartRpm',v)} display={`${fmt(config.turboSpoolStartRpm)} RPM · inferred unless measured`} /><LabeledSlider label="Full spool envelope" value={config.turboSpoolFullRpm??2500} min={800} max={8000} step={50} onChange={v=>updateConfig('turboSpoolFullRpm',v)} display={`${fmt(config.turboSpoolFullRpm??2500)} RPM · at least 200 RPM above onset`} /></>}
+                        <p className="text-xs text-slate-400">Loaded steady-state boost estimate. Generic sizing scales with displacement per turbo; explicit envelopes replace that estimate. Peak-torque RPM is not a measured boost trace. Transient lag and free-rev boost are not validated.</p>
                         <LabeledSlider label="Boost onset bias" value={config.boostOnsetBias} onChange={(v) => updateConfig("boostOnsetBias", v)} min={-1200} max={1200} step={50} display={`${config.boostOnsetBias >= 0 ? "+" : ""}${fmt(config.boostOnsetBias, 0)} rpm`} />
                         <LabeledSlider label="Boost taper / hold" value={config.boostTaperBias * 100} onChange={(v) => updateConfig("boostTaperBias", v / 100)} min={-100} max={100} step={1} display={`${config.boostTaperBias >= 0 ? "+" : ""}${fmt(config.boostTaperBias * 100, 0)} %`} />
                         <div className="grid gap-2">
