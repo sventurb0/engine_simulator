@@ -1,0 +1,32 @@
+import type { SimConfig } from '../EngineSimulatorV2';
+import fitted from './engineCalibrationFits.json';
+export type ReferencePoint = {rpm:number; torqueNm:number; validationOnly?:boolean; basis:'dyno-chart'|'torque-rating'|'power-rating'|'published-point'};
+export type EngineCalibration = {id:string; preset:string; variant:string; evidence:'dyno-chart'|'rating-anchors'; source:string; sourceLabel:string; note:string; uncertaintyPct:number; points:ReferencePoint[]; overrides?:Partial<SimConfig>};
+const kwTorque=(kw:number,rpm:number)=>kw*1000/(rpm*2*Math.PI/60);
+const hpTorque=(hp:number,rpm:number)=>kwTorque(hp*0.7456998715822702,rpm);
+export const engineCalibrations:EngineCalibration[]=[
+ {id:'ls3-2021-crate',preset:'Chevrolet LS3 6.2',variant:'LS3 crate 19419862 · 2021 Chevrolet Performance',evidence:'dyno-chart',source:'https://www.epartrade.com/uploads/contents/29b207cd-1b16-11ec-8c54-560001755c9d/2021/10/2021ChevroletPerformanceCatalog.pdf#page=54',sourceLabel:'Chevrolet Performance 2021, printed p.52',uncertaintyPct:4,note:'Torque curve manually digitised from the manufacturer dyno chart. 4600 torque and 5900 power use the printed ratings. Image precision is limited; these are crankshaft figures, not wheel power. Test procedures (printed p.12) describe SAE J1349/J1995; the specific LS3 chart does not identify which procedure was used.',points:[
+ ...[[1600,335],[2400,355],[3200,370],[4000,405],[4300,418],[4500,424],[4700,424],[5400,410],[6400,330]].map(([rpm,t])=>({rpm,torqueNm:t*1.3558179483314004,basis:'dyno-chart' as const, validationOnly:rpm===4300||rpm===4700})),
+ {rpm:4600,torqueNm:425*1.3558179483314004,basis:'torque-rating' as const}, {rpm:5900,torqueNm:hpTorque(430,5900),basis:'power-rating' as const}].sort((a,b)=>a.rpm-b.rpm)},
+ {id:'f20c-us-2002',preset:'Honda F20C',variant:'2002 S2000 AP1 · US SAE net',evidence:'rating-anchors',source:'https://hondanews.com/en-US/honda-automobiles/releases/release-ac6c52b46473ca4f83631d004c34c7ed-2002-honda-s2000-specifications',sourceLabel:'Honda 2002 S2000 specifications',uncertaintyPct:1,note:'Two published rating anchors only. The intervening curve remains inferred; US 240 mechanical hp must not be confused with Japanese-market output.',overrides:{bore:87,stroke:84,compressionRatio:11,redline:9000},points:[{rpm:7500,torqueNm:153*1.3558179483314004,basis:'torque-rating'},{rpm:8300,torqueNm:hpTorque(240,8300),basis:'power-rating'}]},
+ {id:'lfa-eu',preset:'Toyota 1LR-GUE',variant:'Lexus LFA · European-market launch specification',evidence:'rating-anchors',source:'https://global.toyota/en/detail/308263',sourceLabel:'Lexus/Toyota LFA launch specifications',uncertaintyPct:1,note:'412 kW at 8700 rpm and 480 Nm at 6800 rpm. Two anchors only; no measured full curve.',overrides:{bore:88,stroke:79,compressionRatio:12,redline:9000},points:[{rpm:6800,torqueNm:480,basis:'torque-rating'},{rpm:8700,torqueNm:kwTorque(412,8700),basis:'power-rating'}]},
+ {id:'s65-e92',preset:'BMW S65 4.0',variant:'BMW M3 E92 · S65B40',evidence:'rating-anchors',source:'https://www.press.bmwgroup.com/global/article/detail/T0137039EN/the-new-bmw-m3?language=en',sourceLabel:'BMW M3 launch media information',uncertaintyPct:1,note:'309 kW at 8300 rpm and 400 Nm at 3900 rpm. The 340 Nm at 2000 rpm point is from BMW M’s E92 history article, linked in the project documentation. Other RPMs are inferred.',points:[{rpm:2000,torqueNm:340,basis:'published-point'},{rpm:3900,torqueNm:400,basis:'torque-rating'},{rpm:8300,torqueNm:kwTorque(309,8300),basis:'power-rating'}]},
+ {id:'2jz-jdm-1997',preset:'2JZ-GTE',variant:'1997 Supra RZ · JDM VVT-i 2JZ-GTE',evidence:'rating-anchors',source:'https://toyota.jp/ucar/catalog/brand-TOYOTA/car-SUPRA/199708/1000971/',sourceLabel:'Toyota Japan historical Supra RZ specification',uncertaintyPct:1,note:'206 kW at 5600 rpm and 451.1 Nm at 3600 rpm. This is the later Japanese VVT-i variant, not the export non-VVT-i engine. Other RPMs are inferred.',overrides:{bore:86,stroke:86,compressionRatio:8.5,vvtMode:'intake'},points:[{rpm:3600,torqueNm:451.1,basis:'torque-rating'},{rpm:5600,torqueNm:kwTorque(206,5600),basis:'power-rating'}]},
+ {id:'b234r-my95',preset:'B234R',variant:'1995 Saab 9000 Aero · manual transmission',evidence:'rating-anchors',source:'https://saab-club.com/downloads/Manuals/Owner9000MY95.pdf#page=105',sourceLabel:'Saab 1995 9000 owner’s manual, printed p.109 (archived scan)',uncertaintyPct:1,overrides:{boostOnsetBias:-1200},note:'Boost onset is inferred to support the early torque rating; it is not a measured boost trace. Original Saab handbook hosted by Saab Club. Rating anchors only, not a measured curve. Power is normalised using the handbook’s kW value because its hp terminology is ambiguous.',points:[{rpm:1800,torqueNm:342,basis:'torque-rating'},{rpm:5500,torqueNm:kwTorque(165,5500),basis:'power-rating'}]},
+];
+export const calibrationById=(id?:string)=>engineCalibrations.find(p=>p.id===id);
+export const calibrationForPreset=(name:string)=>engineCalibrations.find(p=>p.preset===name);
+type Fit = {factors:[number,number][]; baselineSignature:string; maxErrorPct:number};
+export const calibrationFits=fitted as unknown as Record<string,Fit>;
+const hardwareKeys=['engineLayout','induction','bore','stroke','compressionRatio','valvesPerCylinder','valvetrainLayout','v8Crank','vvtMode','liftSystem','liftSwitchRpm','intakeType','runnerLength','injectionType','fuelType','exhaustType','headerType','frictionClass','camAggression','exhaustFlow','topEndFlowBias','redline','turboFamily','turboArchitecture','turboBearing','turbineAR','boostControl','boostOnsetBias','boostTaperBias','wastegateBasePsi','intercoolerType','icCoreSize','blowerType','scBoostCap','superchargerDriveRatio','compressorMap'] as const;
+export const calibrationSignature=(config:SimConfig)=>JSON.stringify(hardwareKeys.map(key=>[key,config[key]??null]));
+export function chargeCorrection(config:SimConfig,rpm:number) {
+ if(config.calibrationEnabled===false) return 1;
+ const points=calibrationFits[config.calibrationId??'']?.factors;
+ if(!points?.length) return 1;
+ if(rpm<=points[0][0])return points[0][1];
+ for(let i=1;i<points.length;i++)if(rpm<=points[i][0]){
+  const a=points[i-1],b=points[i],t=(rpm-a[0])/(b[0]-a[0]);return a[1]+(b[1]-a[1])*t;
+ }
+ return points[points.length-1][1];
+}

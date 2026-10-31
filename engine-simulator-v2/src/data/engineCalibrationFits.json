@@ -1,0 +1,118 @@
+{
+  "ls3-2021-crate": {
+    "factors": [
+      [
+        1600,
+        0.8998395303343623
+      ],
+      [
+        2400,
+        0.930962005204701
+      ],
+      [
+        3200,
+        0.9585409956587032
+      ],
+      [
+        4000,
+        1.0491478891254928
+      ],
+      [
+        4500,
+        1.107683205040321
+      ],
+      [
+        4600,
+        1.113349087409167
+      ],
+      [
+        5400,
+        1.108001092338951
+      ],
+      [
+        5900,
+        1.0729355371183185
+      ],
+      [
+        6400,
+        1.0990556272204661
+      ]
+    ],
+    "baselineSignature": "[[\"engineLayout\",\"v8\"],[\"induction\",\"na\"],[\"bore\",103.25],[\"stroke\",92],[\"compressionRatio\",10.7],[\"valvesPerCylinder\",2],[\"valvetrainLayout\",\"ohv\"],[\"v8Crank\",\"crossplane\"],[\"vvtMode\",\"none\"],[\"liftSystem\",\"none\"],[\"liftSwitchRpm\",6200],[\"intakeType\",\"plenum\"],[\"runnerLength\",\"long\"],[\"injectionType\",\"port\"],[\"fuelType\",\"premium\"],[\"exhaustType\",\"performance\"],[\"headerType\",\"shorty\"],[\"frictionClass\",\"normal\"],[\"camAggression\",0.3],[\"exhaustFlow\",0.42],[\"topEndFlowBias\",0.5],[\"redline\",6600],[\"turboFamily\",\"medium\"],[\"turboArchitecture\",\"single\"],[\"turboBearing\",\"journal\"],[\"turbineAR\",\"medium\"],[\"boostControl\",0.68],[\"boostOnsetBias\",0],[\"boostTaperBias\",0],[\"wastegateBasePsi\",11],[\"intercoolerType\",\"small_fmic\"],[\"icCoreSize\",0.76],[\"blowerType\",\"roots\"],[\"scBoostCap\",10],[\"superchargerDriveRatio\",2],[\"compressorMap\",\"generic\"]]",
+    "maxErrorPct": 5.551115123125783e-14
+  },
+  "f20c-us-2002": {
+    "factors": [
+      [
+        7500,
+        1.2263846090342607
+      ],
+      [
+        8300,
+        1.3346413767114025
+      ]
+    ],
+    "baselineSignature": "[[\"engineLayout\",\"i4\"],[\"induction\",\"na\"],[\"bore\",87],[\"stroke\",84],[\"compressionRatio\",11],[\"valvesPerCylinder\",4],[\"valvetrainLayout\",\"dohc\"],[\"v8Crank\",\"crossplane\"],[\"vvtMode\",\"intake\"],[\"liftSystem\",\"aggressive\"],[\"liftSwitchRpm\",6000],[\"intakeType\",\"itb\"],[\"runnerLength\",\"short\"],[\"injectionType\",\"port\"],[\"fuelType\",\"premium\"],[\"exhaustType\",\"performance\"],[\"headerType\",\"fourone\"],[\"frictionClass\",\"performance\"],[\"camAggression\",0.78],[\"exhaustFlow\",0.66],[\"topEndFlowBias\",0.5],[\"redline\",9000],[\"turboFamily\",\"medium\"],[\"turboArchitecture\",\"single\"],[\"turboBearing\",\"journal\"],[\"turbineAR\",\"medium\"],[\"boostControl\",0.68],[\"boostOnsetBias\",0],[\"boostTaperBias\",0],[\"wastegateBasePsi\",11],[\"intercoolerType\",\"small_fmic\"],[\"icCoreSize\",0.76],[\"blowerType\",\"roots\"],[\"scBoostCap\",10],[\"superchargerDriveRatio\",2],[\"compressorMap\",\"generic\"]]",
+    "maxErrorPct": 4.440892098500626e-14
+  },
+  "lfa-eu": {
+    "factors": [
+      [
+        6800,
+        1.001069544724852
+      ],
+      [
+        8700,
+        1.0697240006545403
+      ]
+    ],
+    "baselineSignature": "[[\"engineLayout\",\"v10\"],[\"induction\",\"na\"],[\"bore\",88],[\"stroke\",79],[\"compressionRatio\",12],[\"valvesPerCylinder\",4],[\"valvetrainLayout\",\"dohc\"],[\"v8Crank\",\"crossplane\"],[\"vvtMode\",\"dual\"],[\"liftSystem\",\"none\"],[\"liftSwitchRpm\",6200],[\"intakeType\",\"itb\"],[\"runnerLength\",\"short\"],[\"injectionType\",\"port\"],[\"fuelType\",\"premium\"],[\"exhaustType\",\"race\"],[\"headerType\",\"equal\"],[\"frictionClass\",\"race\"],[\"camAggression\",0.86],[\"exhaustFlow\",0.78],[\"topEndFlowBias\",0.5],[\"redline\",9000],[\"turboFamily\",\"medium\"],[\"turboArchitecture\",\"single\"],[\"turboBearing\",\"journal\"],[\"turbineAR\",\"medium\"],[\"boostControl\",0.68],[\"boostOnsetBias\",0],[\"boostTaperBias\",0],[\"wastegateBasePsi\",11],[\"intercoolerType\",\"small_fmic\"],[\"icCoreSize\",0.76],[\"blowerType\",\"roots\"],[\"scBoostCap\",10],[\"superchargerDriveRatio\",2],[\"compressorMap\",\"generic\"]]",
+    "maxErrorPct": 4.440892098500626e-14
+  },
+  "s65-e92": {
+    "factors": [
+      [
+        2000,
+        1.1354356929265008
+      ],
+      [
+        3900,
+        1.136128739772552
+      ],
+      [
+        8300,
+        1.051636872020139
+      ]
+    ],
+    "baselineSignature": "[[\"engineLayout\",\"v8\"],[\"induction\",\"na\"],[\"bore\",92],[\"stroke\",75.2],[\"compressionRatio\",12],[\"valvesPerCylinder\",4],[\"valvetrainLayout\",\"dohc\"],[\"v8Crank\",\"flatplane\"],[\"vvtMode\",\"dual\"],[\"liftSystem\",\"none\"],[\"liftSwitchRpm\",6200],[\"intakeType\",\"itb\"],[\"runnerLength\",\"short\"],[\"injectionType\",\"port\"],[\"fuelType\",\"premium\"],[\"exhaustType\",\"race\"],[\"headerType\",\"equal\"],[\"frictionClass\",\"race\"],[\"camAggression\",0.82],[\"exhaustFlow\",0.7],[\"topEndFlowBias\",0.5],[\"redline\",8400],[\"turboFamily\",\"medium\"],[\"turboArchitecture\",\"single\"],[\"turboBearing\",\"journal\"],[\"turbineAR\",\"medium\"],[\"boostControl\",0.68],[\"boostOnsetBias\",0],[\"boostTaperBias\",0],[\"wastegateBasePsi\",11],[\"intercoolerType\",\"small_fmic\"],[\"icCoreSize\",0.76],[\"blowerType\",\"roots\"],[\"scBoostCap\",10],[\"superchargerDriveRatio\",2],[\"compressorMap\",\"generic\"]]",
+    "maxErrorPct": 4.440892098500626e-14
+  },
+  "2jz-jdm-1997": {
+    "factors": [
+      [
+        3600,
+        1.0304156022947102
+      ],
+      [
+        5600,
+        0.8067071062776392
+      ]
+    ],
+    "baselineSignature": "[[\"engineLayout\",\"i6\"],[\"induction\",\"turbo\"],[\"bore\",86],[\"stroke\",86],[\"compressionRatio\",8.5],[\"valvesPerCylinder\",4],[\"valvetrainLayout\",\"dohc\"],[\"v8Crank\",\"crossplane\"],[\"vvtMode\",\"intake\"],[\"liftSystem\",\"none\"],[\"liftSwitchRpm\",6200],[\"intakeType\",\"plenum\"],[\"runnerLength\",\"medium\"],[\"injectionType\",\"port\"],[\"fuelType\",\"premium\"],[\"exhaustType\",\"street\"],[\"headerType\",\"cast\"],[\"frictionClass\",\"normal\"],[\"camAggression\",0.38],[\"exhaustFlow\",0.48],[\"topEndFlowBias\",0.5],[\"redline\",6800],[\"turboFamily\",\"medium\"],[\"turboArchitecture\",\"sequential\"],[\"turboBearing\",\"journal\"],[\"turbineAR\",\"medium\"],[\"boostControl\",0.18],[\"boostOnsetBias\",0],[\"boostTaperBias\",0],[\"wastegateBasePsi\",11],[\"intercoolerType\",\"large_fmic\"],[\"icCoreSize\",0.72],[\"blowerType\",\"roots\"],[\"scBoostCap\",10],[\"superchargerDriveRatio\",2],[\"compressorMap\",\"generic\"]]",
+    "maxErrorPct": 1.1102230246251565e-14
+  },
+  "b234r-my95": {
+    "factors": [
+      [
+        1800,
+        1.133535048238942
+      ],
+      [
+        5500,
+        0.9493585397198689
+      ]
+    ],
+    "baselineSignature": "[[\"engineLayout\",\"i4\"],[\"induction\",\"turbo\"],[\"bore\",90],[\"stroke\",90],[\"compressionRatio\",9.25],[\"valvesPerCylinder\",4],[\"valvetrainLayout\",\"dohc\"],[\"v8Crank\",\"crossplane\"],[\"vvtMode\",\"none\"],[\"liftSystem\",\"none\"],[\"liftSwitchRpm\",6200],[\"intakeType\",\"plenum\"],[\"runnerLength\",\"medium\"],[\"injectionType\",\"port\"],[\"fuelType\",\"premium\"],[\"exhaustType\",\"street\"],[\"headerType\",\"cast\"],[\"frictionClass\",\"normal\"],[\"camAggression\",0.34],[\"exhaustFlow\",0.44],[\"topEndFlowBias\",0.5],[\"redline\",6200],[\"turboFamily\",\"small\"],[\"turboArchitecture\",\"single\"],[\"turboBearing\",\"journal\"],[\"turbineAR\",\"medium\"],[\"boostControl\",0.28],[\"boostOnsetBias\",-1200],[\"boostTaperBias\",0],[\"wastegateBasePsi\",11],[\"intercoolerType\",\"sidemount\"],[\"icCoreSize\",0.56],[\"blowerType\",\"roots\"],[\"scBoostCap\",10],[\"superchargerDriveRatio\",2],[\"compressorMap\",\"generic\"]]",
+    "maxErrorPct": 2.220446049250313e-14
+  }
+}

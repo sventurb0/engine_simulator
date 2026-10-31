@@ -53,7 +53,7 @@ Reference dyno sweeps use fuel-specific target lambda and estimated best-torque 
 
 Live motion integrates signed net shaft/brake torque through estimated inertia at 120 Hz, with elapsed-time accumulation, a 100 ms background-tab catch-up cap, and explicit idle/rev-limit boundaries. Trace labels use simulation time. Roller inertia is a relative control, converted to an estimated engine-referred inertia; it is not a measured roller specification. Brake load is an independent opposing torque.
 
-Limitations: generic VE/efficiency and friction models, empirical boost-vs-RPM scheduling, no measured compressor/turbine maps, transient manifold filling, turbo shaft inertia, knock, heat soak or per-engine dyno calibration. Power changes from earlier versions reflect removal of artificial torque support, not verification against a factory rating. Some high-rev modern engines may need individual VE/efficiency calibration.
+Limitations: generic VE/efficiency and friction models, empirical boost-vs-RPM scheduling, only coarse compressor-efficiency map samples, no turbine maps, transient manifold filling, turbo shaft inertia, knock, heat soak or full per-engine validation. Power changes from earlier versions reflect removal of artificial torque support, not verification against a factory rating. Most examples still use the generic model; see the calibration evidence below.
 
 Validation: `npm run test:physics` checks SI identities, shaft-energy balance, humidity/temperature/altitude trends, fuel blends, mixture/timing effects, intercooling, blower losses, signed acceleration and all factory dyno rows.
 
@@ -64,3 +64,16 @@ Reference definitions:
 - [Garrett: compressor-map concepts](https://www.garrettmotion.com/knowledge-center-category/oem/expert/)
 
 The empirical efficiency constants and response curves are implementation assumptions, not values prescribed by these sources.
+
+
+## Source-based calibration (first batch)
+
+Six optional fixed charge-flow correction profiles: LS3 2021 crate, US 2002 F20C, EU LFA 1LR-GUE, E92 S65, JDM 1997 VVT-i 2JZ-GTE and MY95 Saab 9000 Aero manual B234R. Selecting these factory examples loads the specific variant. Calibration can be disabled under Engine. Modified hardware retains the baseline correction; its output is a prediction, not re-fitted to stock ratings. Fuel flow and shaft power continue through the shared energy balance.
+
+Only the LS3 uses a digitised manufacturer dyno curve (Chevrolet Performance 2021, printed p.52, PDF p.54). Chart reading tolerance is approximately ±4%; two points at 4300/4700 rpm are excluded from fitting and used as interpolation holdouts (0.30%/0.16% error against the same chart). These are not independent test-bench measurements. The other five profiles match published anchors only; their intervening curves remain inferred. Source URLs, variants and notes are recorded in `src/data/engineCalibrations.ts` and shown in the app. Additional S65 point source: https://www.bmw-m.com/en/topics/magazine-article-pool/bmw-m3-e92-e90-and-e93.html .
+
+Reference normalisation assumes 20°C, sea level, 45% humidity and default vehicle speed. This does not reconstruct OEM test conditions or apply an SAE correction standard. Fitting uses fixed effective charge/VE multipliers, not measured VE. Corrections interpolate linearly and hold their endpoint outside the reference range; accuracy outside that range is unknown. The Saab boost onset is inferred to support its early torque anchor, not derived from a boost trace. Hardware, fuel and environmental changes are unvalidated predictions.
+
+Garrett G25-550 and GTX3071R Gen II are explicit aftermarket compressor-efficiency choices under Boost; no factory engine is assumed to use either. Sparse manual reads of the linked manufacturer contours interpolate only inside a limited interior region, with approximately ±3 percentage-point reading uncertainty (not a statistical confidence interval). Outside that region the generic efficiency model is used and labelled. No surge/choke envelope, speed-line limit, wastegate dynamics or turbine matching is modelled. These options change compressor heating, charge density and resulting power; they do not replace empirical boost scheduling. Corrected flow uses Garrett's 545°R / 13.95 psia convention, which the product images do not independently specify: https://www.garrettmotion.com/wp-content/uploads/2023/02/737639-34_781328_Speed_Sensor_Kit_Installation_Instructions_revG.pdf . Airflow uses the solver's dry-air approximation; inlet duct pressure loss is omitted.
+
+Run `npm run fit:calibration` after changing baseline physics, then review and commit generated coefficients. `npm run test:calibration` checks fitted anchors, LS3 holdouts, tuning/weather response, map nodes/fallback and all factory configurations. Matching fitted points demonstrates fitting consistency, not independent model validation.

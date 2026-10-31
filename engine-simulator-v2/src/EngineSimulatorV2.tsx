@@ -1,3 +1,5 @@
+import { engineCalibrations, calibrationById, calibrationForPreset, calibrationFits, calibrationSignature, chargeCorrection } from "./data/engineCalibrations";
+import { compressorMaps, mapEfficiency, correctedFlow, type CompressorMapKey } from "./data/compressorMaps";
 import { WATTS_PER_HP, NM_PER_LBFT, PA_PER_PSI, KG_S_TO_LB_MIN, powerHpFromTorque, torqueFromPowerHp, bmepPsiFromTorque, fuelProperties, mixtureEfficiency, ignitionEfficiency, injectorCcFromFuel, angularAccelerationRpmS, throttleAfterStep } from "./lib/powertrainMath";
 import { expandFactoryPresets, manufacturerReferences } from "./data/factoryEngines";
 import { useEngineAudio, createProceduralSampleBuffer } from "./lib/engineAudio.js";
@@ -40,6 +42,9 @@ type FiringSoundMode = "stock" | "even" | "crossplane_i4" | "bigbang_i4" | "cp3_
 type ApplicationType = "car";
 
 export type SimConfig = {
+  calibrationId?: string;
+  calibrationEnabled?: boolean;
+  compressorMap?: CompressorMapKey;
   gameMeta?: { name: string };
   applicationType: ApplicationType;
   engineLayout: EngineLayout;
@@ -104,6 +109,9 @@ type RuntimeState = {
 };
 
 type SolvePoint = {
+  chargeCorrection: number;
+  correctedAirLbMin: number;
+  compressorMapStatus: "generic" | "low-pr" | "sampled" | "outside-sampled-region";
   indicatedHp: number;
   frictionTorqueLbFt: number;
   pumpingTorqueLbFt: number;
@@ -473,6 +481,8 @@ const legacyPresets: EnginePreset[] = [
 const presets = expandFactoryPresets(legacyPresets);
 
 const defaultConfig: SimConfig = {
+  compressorMap: "generic",
+  calibrationEnabled: true,
   gameMeta: { name: "Saabish turbo" },
   applicationType: "car",
   engineLayout: "i4",
@@ -534,6 +544,9 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     ...defaultConfig,
     ...config,
     applicationType: "car",
+    compressorMap: coerceOption(config.compressorMap, ["generic","g25-550","gtx3071r-gen2"] as const, "generic"),
+    calibrationId: calibrationById(config.calibrationId)?.id,
+    calibrationEnabled: config.calibrationEnabled !== false,
     engineLayout: coerceOption(config.engineLayout, engineLayoutValues, defaultConfig.engineLayout),
     induction: coerceOption(config.induction, inductionValues, defaultConfig.induction),
     valvetrainLayout: coerceOption(config.valvetrainLayout, valvetrainValues, defaultConfig.valvetrainLayout),
@@ -559,6 +572,12 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     valvesPerCylinder: [2, 3, 4, 5].includes(config.valvesPerCylinder as number) ? (config.valvesPerCylinder as 2 | 3 | 4 | 5) : defaultConfig.valvesPerCylinder,
     cinemaMode: typeof config.cinemaMode === "boolean" ? config.cinemaMode : defaultConfig.cinemaMode,
   };
+}
+
+function configForPreset(preset:EnginePreset):SimConfig {
+  const profile=preset.group==='factory'?calibrationForPreset(preset.name):undefined;
+  return sanitizeConfig({...defaultConfig,...preset.config,...profile?.overrides,
+    ...(profile?{calibrationId:profile.id,calibrationEnabled:true}:{}), gameMeta:{name:preset.name},applicationType:'car'});
 }
 
 function sanitizePreset(preset: unknown): EnginePreset | null {
@@ -892,7 +911,7 @@ function getHardwareState(config: SimConfig, rpm: number) {
   return hw;
 }
 
-function solvePoint(config: SimConfig, runtime: RuntimeState): SolvePoint {
+function solvePoint(config: SimConfig, runtime: RuntimeState, chargeScaleOverride?: number): SolvePoint {
   const engine = engineLayouts[config.engineLayout];
   const atm = atmosphere(config.altitude, config.ambientTemp, config.humidity);
   const dispL = displacementLitres(config.bore, config.stroke, engine.cylinders);
@@ -900,6 +919,7 @@ function solvePoint(config: SimConfig, runtime: RuntimeState): SolvePoint {
   const throttle = clamp(runtime.throttle, 0, 1);
   const rpm = clamp(runtime.rpm, resolveIdleRpm(config), config.redline);
   const hw = getHardwareState(config, rpm);
+  const chargeScale = chargeScaleOverride ?? chargeCorrection(config,rpm);
 
   let boostPsi = 0;
   let pr = 1;
@@ -939,14 +959,28 @@ function solvePoint(config: SimConfig, runtime: RuntimeState): SolvePoint {
 
   const icEff = intercoolerEffectiveness(config.intercoolerType, config.icCoreSize, config.vehicleSpeedKph);
   const icDropPsi = pressureDropAcrossIC(config.intercoolerType, boostPsi, config.icCoreSize) * smoothStep(boostPsi, 0, 1) * throttle * throttle;
-  const postIcTempK = config.induction === "na" ? atm.tempK : atm.tempK + (preIcTempK - atm.tempK) * (1 - icEff);
-  const chargeTempK = postIcTempK;
-  const mapKpa = Math.max(25, mapKpaRaw - (config.induction === "na" ? 0 : icDropPsi * 6.894757));
-
+  const mapKpa = Math.max(25, mapKpaRaw - (config.induction === 'na' ? 0 : icDropPsi * 6.894757));
   const valveLimit = valvetrainCeiling(config);
   const topEndBias = config.topEndFlowBias - 0.5;
   const flowFalloff = 1 - smoothStep(rpm, valveLimit, valveLimit + 1800) * (0.45 - topEndBias * 0.12);
-  const ve = estimateVE(config, rpm, mapKpa, dispL) * flowFalloff;
+  const ve = estimateVE(config,rpm,mapKpa,dispL) * flowFalloff * chargeScale;
+  const genericEfficiency=compressorEff;
+  let compressorMapStatus:SolvePoint['compressorMapStatus']='generic';
+  let chargeTempK=config.induction==='na'?atm.tempK:atm.tempK+(preIcTempK-atm.tempK)*(1-icEff);
+  if(config.induction==='turbo' && config.compressorMap && config.compressorMap!=='generic') {
+    compressorMapStatus=pr<1.5?'low-pr':'outside-sampled-region';
+    for(let iteration=0;iteration<16;iteration++) {
+      const estimateKgS=dispM3*(rpm/120)*ve*(mapKpa*1000)/(R_AIR*chargeTempK)*atm.dryAirFraction;
+      const flow=correctedFlow(estimateKgS*KG_S_TO_LB_MIN,atm.tempK,atm.pressurePa);
+      const eff=mapEfficiency(config.compressorMap,flow,pr);
+      compressorEff=eff??genericEfficiency;
+      compressorMapStatus=eff!==null?'sampled':pr<1.5?'low-pr':'outside-sampled-region';
+      preIcTempK=atm.tempK*(1+(Math.pow(pr,(GAMMA_AIR-1)/GAMMA_AIR)-1)/compressorEff);
+      const nextTemp=atm.tempK+(preIcTempK-atm.tempK)*(1-icEff);
+      chargeTempK=(chargeTempK+nextTemp)/2;
+    }
+  }
+
   const cyclesPerSec = rpm / 120; // four-stroke: one intake cycle per two revolutions
   const intakeVolumeM3S = dispM3 * cyclesPerSec * ve;
   const airMassKgS = intakeVolumeM3S * (mapKpa * 1000) / (R_AIR * chargeTempK) * atm.dryAirFraction;
@@ -986,6 +1020,7 @@ function solvePoint(config: SimConfig, runtime: RuntimeState): SolvePoint {
   boostPsi = Math.max(0, (mapKpa * 1000 - atm.pressurePa) / PA_PER_PSI);
 
   return {
+    chargeCorrection:chargeScale, correctedAirLbMin:correctedFlow(airLbMin,atm.tempK,atm.pressurePa), compressorMapStatus,
     indicatedHp, frictionTorqueLbFt, pumpingTorqueLbFt, driveLossHp, fuelFlowKgHr, brakeThermalEfficiency, lambda, actualAfr, ignitionDeg: runtime.ignitionDeg,
     rpm,
     dispL,
@@ -1009,12 +1044,12 @@ function solvePoint(config: SimConfig, runtime: RuntimeState): SolvePoint {
   };
 }
 
-function solveDynoPoint(config: SimConfig, rpm: number): SolvePoint {
-  const probe = solvePoint(config, {rpm, throttle:1, afr:12.9, ignitionDeg:24});
+function solveDynoPoint(config: SimConfig, rpm: number, chargeScaleOverride?: number): SolvePoint {
+  const probe = solvePoint(config, {rpm, throttle:1, afr:12.9, ignitionDeg:24},chargeScaleOverride);
   const fuel = fuelProperties(config.fuelType);
   const hw = getHardwareState(config,rpm);
   return solvePoint(config, {rpm, throttle:1, afr:probe.targetAfr / fuel.stoich * 14.7,
-    ignitionDeg:mbtTimingAdvance(rpm,probe.mapKpa)-hw.timingBonus});
+    ignitionDeg:mbtTimingAdvance(rpm,probe.mapKpa)-hw.timingBonus},chargeScaleOverride);
 }
 
 function buildDynoSweep(config: SimConfig) {
@@ -1022,7 +1057,9 @@ function buildDynoSweep(config: SimConfig) {
   const start = Math.max(1200, resolveIdleRpm(config));
   for (let rpm = start; rpm < config.redline; rpm += 100) rows.push(solveDynoPoint(config,rpm));
   rows.push(solveDynoPoint(config,config.redline));
-  return rows;
+  const profile=config.calibrationEnabled===false?undefined:calibrationById(config.calibrationId);
+  for(const point of profile?.points??[])if(point.rpm>=start && point.rpm<=config.redline && !rows.some(row=>row.rpm===point.rpm))rows.push(solveDynoPoint(config,point.rpm));
+  return rows.sort((a,b)=>a.rpm-b.rpm);
 }
 
 function stepRuntime(config: SimConfig, runtime: RuntimeState, targetThrottle: number, dt: number): RuntimeState {
@@ -1212,6 +1249,10 @@ export default function EngineSimulatorV2() {
   const factoryPresets = useMemo(() => filteredPresets.filter((p) => p.group === "factory"), [filteredPresets]);
   const manufacturers = useMemo(() => [...new Set(presets.filter(p=>p.group==='factory').map(p=>p.manufacturer!))].sort(), []);
   const visibleManufacturers = manufacturers.filter(name => (presetFilter || manufacturer === 'all' || name === manufacturer) && factoryPresets.some(p=>p.manufacturer===name));
+  const activeCalibration=calibrationById(config.calibrationId);
+  const activeFit=calibrationFits[config.calibrationId??''];
+  const stockCalibration=activeFit?.baselineSignature===calibrationSignature(config);
+  const activeMap=config.compressorMap && config.compressorMap!=='generic'?compressorMaps[config.compressorMap]:undefined;
   const selectedPreset = presets.find(p=>p.name===config.gameMeta?.name);
   const customPresets = useMemo(() => filteredPresets.filter((p) => p.group === "custom"), [filteredPresets]);
   const userPresets = useMemo(() => filteredPresets.filter((p) => p.group === "saved"), [filteredPresets]);
@@ -1327,7 +1368,7 @@ export default function EngineSimulatorV2() {
   const liveTimeStart = useMemo(() => Math.max(0, lastLiveTime - 5), [lastLiveTime]);
 
   const applyPreset = (preset: EnginePreset) => {
-    const nextConfig = sanitizeConfig({ ...defaultConfig, ...preset.config, gameMeta: { name: preset.name }, applicationType: "car" });
+    const nextConfig = configForPreset(preset);
     setConfig(nextConfig);
     setRuntime({ ...defaultRuntime, rpm: resolveIdleRpm(nextConfig), throttle: 0 });
     setLiveThrottleTarget(0);
@@ -1473,6 +1514,7 @@ export default function EngineSimulatorV2() {
                     </select>
                     <div className="text-xs text-slate-500">{presets.filter(p=>p.group==='factory').length} examples · {manufacturers.length} manufacturers{presetFilter ? ` · ${factoryPresets.length} matches across all makes` : ''}</div>
                   </div>
+                  {activeCalibration && <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-3 text-xs text-slate-300"><div className="font-medium text-sky-300">{activeCalibration.evidence==='dyno-chart'?'Dyno curve fit':'Published rating anchors'}</div><div className="mt-1">{activeCalibration.variant}</div><div className="mt-1 text-slate-400">{config.calibrationEnabled===false?'Calibration disabled':stockCalibration?'Stock model baseline':'Modified hardware · base correction retained'}</div></div>}
                   {selectedPreset?.setupKind === 'illustrative' && <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3 text-xs text-amber-200">Approximate setup loaded. Nominal capacity and architecture identify the example; geometry, rev limit and tuning are illustrative.</div>}
                   <div className="grid gap-3">
                     {visibleManufacturers.map(make=><details key={`${make}-${manufacturer}-${Boolean(presetFilter)}`} open={manufacturer===make || Boolean(presetFilter)} className="rounded-xl border border-slate-700/70 bg-slate-900/60">
@@ -1480,14 +1522,14 @@ export default function EngineSimulatorV2() {
                       <div className="grid gap-1.5 px-2 pb-3">
                         {factoryPresets.filter(p=>p.manufacturer===make).map(preset=><button key={preset.name} onClick={()=>applyPreset(preset)} aria-pressed={config.gameMeta?.name===preset.name} className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${config.gameMeta?.name===preset.name ? 'border-sky-500/60 bg-sky-500/10' : 'border-transparent bg-slate-950/50 hover:border-slate-600'}`}>
                           <span className="block text-sm font-medium text-slate-100">{preset.name}</span>
-                          <span className="mt-1 block text-[11px] text-slate-400">{preset.nominalLitres?.toFixed(1)} L · {engineLayouts[preset.config.engineLayout!]?.label} · {preset.config.induction==='na'?'Naturally aspirated':preset.config.induction==='turbo'?'Turbocharged':'Supercharged'}{preset.setupKind==='illustrative'?' · Approx. setup':''}</span>
+                          <span className="mt-1 block text-[11px] text-slate-400">{preset.nominalLitres?.toFixed(1)} L · {engineLayouts[preset.config.engineLayout!]?.label} · {preset.config.induction==='na'?'Naturally aspirated':preset.config.induction==='turbo'?'Turbocharged':'Supercharged'}{calibrationForPreset(preset.name)?(calibrationForPreset(preset.name)?.evidence==='dyno-chart'?' · Dyno curve fit':' · Rating anchors'):preset.setupKind==='illustrative'?' · Approx. setup':''}</span>
                         </button>)}
                         {manufacturerReferences[make] && <a className="px-3 pt-2 text-xs text-sky-400 hover:underline" href={manufacturerReferences[make].url} target="_blank" rel="noreferrer">{manufacturerReferences[make].label} ↗</a>}
                       </div>
                     </details>)}
                     {!visibleManufacturers.length && <p className="text-sm text-slate-400">No factory examples match. Try an engine code or manufacturer.</p>}
                   </div>
-                  <details className="rounded-xl border border-slate-700/60 p-3 text-xs text-slate-400"><summary className="cursor-pointer">About these examples</summary><p className="mt-2">Real engine families and named factory applications, with approximate simulator setups. New entries use nominal displacement and estimated square bore/stroke geometry. Rev limits, boost, compression and tuning require individual verification. Published output is not a calibration target. Related applications can share an engine family. Manufacturer links are background references, not verification of every setting.</p></details>
+                  <details className="rounded-xl border border-slate-700/60 p-3 text-xs text-slate-400"><summary className="cursor-pointer">About these examples</summary><p className="mt-2">Real engine families and named factory applications, with approximate simulator setups. New entries use nominal displacement and estimated square bore/stroke geometry. Rev limits, boost, compression and tuning require individual verification. Only entries labelled Dyno curve fit or Rating anchors have source-based calibration; all other examples remain generic estimates. Related applications can share an engine family. Manufacturer links are background references, not verification of every setting.</p></details>
                   <div className="rounded-2xl border border-slate-700/60 bg-slate-900/70 p-3 grid gap-3">
                     <div className="text-sm font-semibold text-slate-200">Custom and tuned examples</div>
                     <div className="grid gap-2 sm:grid-cols-2">
@@ -1568,6 +1610,7 @@ export default function EngineSimulatorV2() {
 
               {tab === "engine" && (
                 <div className="grid gap-4">
+                  {activeCalibration && <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={config.calibrationEnabled!==false} onChange={e=>updateConfig('calibrationEnabled',e.target.checked)} />Use source-based engine calibration</label>}
                   <div className="rounded-2xl border border-slate-700/60 bg-slate-900/70 p-4 grid gap-4">
                     <div className="text-sm font-semibold text-slate-200">Core engine</div>
                     <div className="grid gap-2">
@@ -1815,7 +1858,13 @@ export default function EngineSimulatorV2() {
                             </Select>
                           </div>
                         </div>
-                        <LabeledSlider label="Boost control" value={config.boostControl * 100} onChange={(v) => updateConfig("boostControl", v / 100)} min={0} max={100} display={`${fmt(config.boostControl * 100, 0)} %`} />
+                        <label className="grid gap-2 text-sm text-slate-300">Compressor efficiency model
+                        <select aria-label="Compressor efficiency model" value={config.compressorMap??'generic'} onChange={e=>updateConfig('compressorMap',e.target.value as CompressorMapKey)} className="h-11 rounded-xl border border-slate-700 bg-slate-950 px-3">
+                          <option value="generic">Generic turbo family</option><option value="g25-550">Garrett G25-550 · sampled map</option><option value="gtx3071r-gen2">Garrett GTX3071R Gen II · sampled map</option>
+                        </select>
+                      </label>
+                      {activeMap && <div className="text-xs text-slate-400">Manual efficiency samples, approximately ±3 percentage points. Outside the sampled interior, the generic model is used. This does not verify surge, choke, shaft speed or turbine matching. <a className="text-sky-400" href={activeMap.source} target="_blank" rel="noreferrer">Manufacturer map ↗</a></div>}
+                      <LabeledSlider label="Boost control" value={config.boostControl * 100} onChange={(v) => updateConfig("boostControl", v / 100)} min={0} max={100} display={`${fmt(config.boostControl * 100, 0)} %`} />
                         <LabeledSlider label="Wastegate spring" value={config.wastegateBasePsi} onChange={(v) => updateConfig("wastegateBasePsi", v)} min={3} max={20} step={0.5} display={`${fmt(config.wastegateBasePsi, 1)} psi`} />
                         <LabeledSlider label="Boost onset bias" value={config.boostOnsetBias} onChange={(v) => updateConfig("boostOnsetBias", v)} min={-1200} max={1200} step={50} display={`${config.boostOnsetBias >= 0 ? "+" : ""}${fmt(config.boostOnsetBias, 0)} rpm`} />
                         <LabeledSlider label="Boost taper / hold" value={config.boostTaperBias * 100} onChange={(v) => updateConfig("boostTaperBias", v / 100)} min={-100} max={100} step={1} display={`${config.boostTaperBias >= 0 ? "+" : ""}${fmt(config.boostTaperBias * 100, 0)} %`} />
@@ -1948,6 +1997,9 @@ export default function EngineSimulatorV2() {
               </CardHeader>
               <CardContent className="grid gap-5">
                 <EngineInfoBar config={config} point={displayedPoint} />
+                {activeCalibration && <details className="rounded-xl border border-sky-500/30 p-3 text-sm text-slate-300"><summary className="cursor-pointer text-sky-300">Calibration evidence · {activeCalibration.evidence==='dyno-chart'?'Digitised dyno curve':'Published ratings only'}</summary><p className="mt-3">{activeCalibration.variant}. {activeCalibration.note}</p><p className="mt-2 text-xs text-slate-400">Fixed charge-flow correction fitted at 20°C, sea level, 45% humidity; this normalisation is assumed, not a reconstruction of the source test conditions. Between anchors the model is inferred; outside their RPM range the endpoint correction is held. Hardware and environment changes remain predictions. Matching fitted anchors is not independent validation.</p><a className="mt-2 block text-sky-400" href={activeCalibration.source} target="_blank" rel="noreferrer">{activeCalibration.sourceLabel} ↗</a><div className="mt-3 overflow-x-auto"><table className="w-full text-xs"><thead><tr><th>RPM</th><th>Reference Nm</th><th>Current model Nm</th><th>Evidence</th></tr></thead><tbody>{activeCalibration.points.map(p=><tr key={p.rpm}><td>{p.rpm}</td><td>{fmt(p.torqueNm,1)}</td><td>{fmt(solveDynoPoint(config,p.rpm).torqueLbFt*1.3558179483314004,1)}</td><td>{p.validationOnly?'Chart holdout':p.basis}</td></tr>)}</tbody></table></div><p className="mt-2 text-xs text-slate-400">{activeCalibration.evidence==='dyno-chart'?'Chart reading tolerance approximately ±4%.':'Ratings constrain individual points only; inferred peaks elsewhere may exceed the published ratings. No full-curve accuracy claim.'}</p></details>}
+                {activeMap && config.induction==='turbo' && <div className="rounded-xl border border-slate-700 p-3 text-sm"><div>{activeMap.name} · {displayedPoint.compressorMapStatus==='sampled'?'Inside sampled efficiency region':'Generic efficiency fallback'}</div><p className="text-xs text-slate-400">Corrected flow {fmt(displayedPoint.correctedAirLbMin,1)} lb/min · pressure ratio {fmt(displayedPoint.pr,2)} · compressor efficiency {fmt(displayedPoint.compressorEff*100,1)}%. Garrett reference: 545°R / 13.95 psia. Coarse interior efficiency samples only, approximately ±3 percentage points; no surge, choke, speed or turbine validation.</p><a className="text-xs text-sky-400" href={activeMap.image} target="_blank" rel="noreferrer">Open original manufacturer compressor map ↗</a></div>}
+
                                 <div className="h-[500px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={chartData} margin={{ top: 20, right: 18, left: 10, bottom: 8 }}>
