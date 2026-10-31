@@ -33,7 +33,7 @@ function makeContext(){
 }
 globalThis.window={AudioContext:makeContext,setInterval(fn){const id=++intervalId;intervals.set(id,fn);return id;},clearInterval(id){intervals.delete(id);},setTimeout(fn,ms){timers.push({at:clock+ms/1000,fn});}};
 async function renderHook(config,point,throttle,enabled=true){cursor=0;const result=m.useEngineAudio(config,point,enabled,throttle);pending.splice(0).forEach(f=>f());await Promise.resolve();await Promise.resolve();return result;}
-const base={engineLayout:'i4',induction:'turbo',gameMeta:{name:'B234R'},bore:90,stroke:90,redline:6200,v8Crank:'crossplane',valvetrainLayout:'dohc',valvesPerCylinder:4,vvtMode:'none',liftSystem:'none',liftSwitchRpm:6000,exhaustType:'street',headerType:'cast',soundTexture:.62,micPosition:'dyno_room',roomSize:.55,cinemaMode:true,engineLoudness:1,turboLoudness:.7,superchargerLoudness:.88,turboArchitecture:'single',wastegateBasePsi:11,boostControl:.28,chargeReleaseMode:'recirc',antiSurge:.15,blowerType:'roots',superchargerDriveRatio:1.6,scBoostCap:8};
+const base={audioModel:'legacy',engineLayout:'i4',induction:'turbo',gameMeta:{name:'B234R'},bore:90,stroke:90,redline:6200,v8Crank:'crossplane',valvetrainLayout:'dohc',valvesPerCylinder:4,vvtMode:'none',liftSystem:'none',liftSwitchRpm:6000,exhaustType:'street',headerType:'cast',soundTexture:.62,micPosition:'dyno_room',roomSize:.55,cinemaMode:true,engineLoudness:1,turboLoudness:.7,superchargerLoudness:.88,turboArchitecture:'single',wastegateBasePsi:11,boostControl:.28,chargeReleaseMode:'recirc',antiSurge:.15,blowerType:'roots',superchargerDriveRatio:1.6,scBoostCap:8};
 for(const [name,changes] of [['Saab turbo',{}],['LS3 V8',{engineLayout:'v8',induction:'na',valvetrainLayout:'ohv'}],['V12',{engineLayout:'v12',induction:'na'}],['Roots blower',{...sc}],['Twin screw',{...sc,blowerType:'twinscrew'}],['Centrifugal',{...sc,blowerType:'centrifugal'}],['Maximum mix',{...sc,engineLayout:'v8',v8Crank:'crossplane',valvetrainLayout:'ohv',engineLoudness:2,superchargerLoudness:1.8,micPosition:'rear_exhaust',roomSize:1}]]){
  reset();let seed=42;const random=Math.random;Math.random=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/4294967296;};
  const config={...base,...changes};
@@ -52,3 +52,4 @@ reset();const p={rpm:4000,dispL:2.3,boostPsi:8,mapKpa:150,chargeTempC:30};await 
 // A delayed OFF must not suspend a subsequently restarted context.
 await renderHook(base,p,.8,false);await renderHook(base,p,.8,true);clock+=.1;timers.splice(0).forEach(t=>t.fn());await Promise.resolve();assert.equal(adapter.state,'running');
 console.log('PASS: throttle blends, blower controls, valve choices, stall recovery, restart race and seven actual offline renders. This does not assess subjective sound quality.');fs.unlinkSync(out);
+

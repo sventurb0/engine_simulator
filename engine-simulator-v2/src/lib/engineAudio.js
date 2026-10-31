@@ -553,8 +553,8 @@ export function useEngineAudio(config, point, enabled, throttle) {
 
   useEffect(() => {
     if (!enabled) { setAcousticStatus('off'); return; }
-    if (config.audioModel !== 'acoustic' || !acousticProfileFor(config)) {
-      setAcousticStatus(config.audioModel === 'acoustic' ? 'unsupported' : 'legacy');
+    if (config.audioModel === 'legacy' || !acousticProfileFor(config)) {
+      setAcousticStatus(config.audioModel !== 'legacy' ? 'unsupported' : 'legacy');
       return;
     }
     let cancelled = false;
@@ -725,14 +725,16 @@ export function useEngineAudio(config, point, enabled, throttle) {
         const basePeriod = 1 / eventHz;
         const pattern = getFiringPattern(localConfig.engineLayout, localConfig.v8Crank, localConfig.firingSoundMode);
         const acousticProfile = acousticProfileFor(localConfig);
-        const useAcoustics = localConfig.audioModel === 'acoustic' && acousticProfile && localNodes.acousticNode && !localNodes.acousticFailed;
+        const useAcoustics = localConfig.audioModel !== 'legacy' && acousticProfile && localNodes.acousticNode && !localNodes.acousticFailed;
         const micProfile = getMicProfile(localConfig.micPosition);
         const legacyLevel = useAcoustics ? 0 : 1;
         if(!useAcoustics && localNodes.acousticWasActive) nextFireTimeRef.current=localCtx.currentTime+.005;
         localNodes.acousticWasActive=Boolean(useAcoustics);
         for (const bank of [localNodes.exhaustRes,localNodes.intakeRes,localNodes.blockRes]) bank.input.gain.setTargetAtTime(legacyLevel,localCtx.currentTime,.025);
         if (localNodes.acousticNode) {
-          localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),profile:acousticProfile?.id,rpm:targetPoint.rpm,throttle:localThrottle,load:clamp((targetPoint.mapKpa-30)/75,0,1),header:localConfig.headerType,exhaust:localConfig.exhaustType});
+          const components=localNodes.acousticComponentId===acousticProfile?.id?undefined:acousticProfile;
+          localNodes.acousticComponentId=acousticProfile?.id;
+          localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),components,rpm:targetPoint.rpm,throttle:localThrottle,load:clamp((targetPoint.mapKpa-30)/75,0,1),header:localConfig.headerType,exhaust:localConfig.exhaustType});
           const levels=[micProfile.exhaust*(1.5+localConfig.engineLoudness*.85),micProfile.intake*(.7+localConfig.engineLoudness*.3),micProfile.block];
           localNodes.acousticGains.forEach((gain,index)=>gain.gain.setTargetAtTime(useAcoustics?levels[index]:0,localCtx.currentTime,.025));
         }
@@ -760,7 +762,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
         const profileSharpness = profile.mechanicalSharpness || (localConfig.valvetrainLayout === "dohc" ? 2.8 : localConfig.valvetrainLayout === "ohv" ? 1.5 : 1.9);
 
         localNodes.micHp.frequency.setTargetAtTime(mic.hp, localCtx.currentTime, 0.05);
-        const muscleHighCut = oldMuscleV8 ? clamp(4550 - localPoint.dispL * 155 - classicV8HeavyBlend * 650, 2700, 5200) : mic.lp;
+        const muscleHighCut = !useAcoustics && oldMuscleV8 ? clamp(4550 - localPoint.dispL * 155 - classicV8HeavyBlend * 650, 2700, 5200) : mic.lp;
         localNodes.micLp.frequency.setTargetAtTime(Math.min(mic.lp, muscleHighCut), localCtx.currentTime, 0.05);
         localNodes.roomSend.gain.setTargetAtTime(legacyLevel * mic.room * (0.35 + (localConfig.roomSize || 0.38) * 1.1), localCtx.currentTime, 0.08);
         localNodes.roomReturn.gain.setTargetAtTime(mic.room * 0.18, localCtx.currentTime, 0.08);
@@ -795,7 +797,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
         localNodes.blockRes.filters[2].gain.gain.setTargetAtTime((activeAudio * 0.012 + profileTopTick * 0.012) * blockGainScale, localCtx.currentTime, 0.08);
 
         localNodes.turboHiss.filter.frequency.setTargetAtTime(1600 + boostNorm * 3600, localCtx.currentTime, 0.06);
-        const turboHissGain = localConfig.induction === "turbo" && boostNorm > 0.12 && throttleAudio > 0.22 ? (0.001 + (profile.whistleBias || 0) * 0.006 + (localConfig.turboLoudness || 0.7) * 0.007) * Math.pow(boostNorm, 1.25) * mic.air : 0;
+        const turboHissGain = localConfig.induction === "turbo" && boostNorm > 0.12 && throttleAudio > 0.22 ? (0.001 + (useAcoustics ? 0.015 : (profile.whistleBias || 0)) * 0.006 + (localConfig.turboLoudness || 0.7) * 0.007) * Math.pow(boostNorm, 1.25) * mic.air : 0;
         localNodes.turboHiss.gain.gain.setTargetAtTime(turboHissGain, localCtx.currentTime, 0.08);
         localNodes.turboOsc.frequency.setTargetAtTime(1600 + boostNorm * 4100, localCtx.currentTime, 0.10);
         localNodes.turboGain.gain.setTargetAtTime(0, localCtx.currentTime, 0.12);
@@ -933,7 +935,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
         const throttleDrop = lastThrottleRef.current - localThrottle;
         const throttleRise = localThrottle - lastThrottleRef.current;
         const boostDrop = Math.max(0, lastBoostRef.current - localPoint.boostPsi);
-        if (throttleRise > 0.16 && localPoint.rpm > 1600 && Math.random() < 0.4) {
+        if (!useAcoustics && throttleRise > 0.16 && localPoint.rpm > 1600 && Math.random() < 0.4) {
           const stab = localCtx.createBufferSource();
           stab.buffer = localNodes.noiseBuffer;
           const filter = localCtx.createBiquadFilter();
@@ -964,7 +966,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
             lastReleaseTimeRef.current = localCtx.currentTime;
           }
         }
-        if (localPoint.rpm > localConfig.redline - 90 && localThrottle > 0.72 && localCtx.currentTime - lastLimiterTimeRef.current > 0.03) {
+        if (!useAcoustics && localPoint.rpm > localConfig.redline - 90 && localThrottle > 0.72 && localCtx.currentTime - lastLimiterTimeRef.current > 0.03) {
           triggerPop(localCtx.currentTime, 0.4 + load * 0.6);
           lastLimiterTimeRef.current = localCtx.currentTime;
         }
@@ -990,4 +992,5 @@ export function useEngineAudio(config, point, enabled, throttle) {
 export function useApexEngineAudio({ config, point, enabled, throttle, pageActive }) {
   return useEngineAudio(config, point, Boolean(enabled && pageActive), throttle);
 }
+
 

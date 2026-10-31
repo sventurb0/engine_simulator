@@ -1,60 +1,99 @@
-// Standalone ES module: also loaded directly by AudioWorklet.addModule.
-// Geometry and acoustic coefficients are explicit starting assumptions, NOT measured hardware/IRs.
-export const acousticProfiles = {
-  b234r: {id:'b234r',name:'Saab B234R',cylinders:4,banks:[0,0,0,0],runners:[.42,.50,.46,.55],collector:1.1,tailpipe:2.5,cutoff:1150,pulseMs:4.2,turbo:true},
-  ls3: {id:'ls3',name:'Chevrolet LS3',cylinders:8,banks:[0,1,0,1,1,0,1,0],runners:[.48,.52,.44,.56,.50,.46,.54,.49],collector:1.8,tailpipe:2.7,cutoff:2300,pulseMs:5.5,turbo:false},
-  f20c: {id:'f20c',name:'Honda F20C',cylinders:4,banks:[0,0,0,0],runners:[.48,.50,.49,.51],collector:1.5,tailpipe:2.4,cutoff:3300,pulseMs:2.8,turbo:false},
-};
-export function acousticProfileFor(config) {
-  const name=config.gameMeta?.name??'';
-  if((config.calibrationId==='b234r-my95'||name==='B234R')&&config.engineLayout==='i4')return acousticProfiles.b234r;
-  if((config.calibrationId==='ls3-2021-crate'||name==='Chevrolet LS3 6.2')&&config.engineLayout==='v8')return acousticProfiles.ls3;
-  if((config.calibrationId==='f20c-us-2002'||name==='Honda F20C')&&config.engineLayout==='i4')return acousticProfiles.f20c;
-  return null;
-}
+// Standalone module shared by the UI, tests and AudioWorklet. No engine names or IDs select a voice.
+// Inferred dimensions and sound coefficients are acoustic assumptions, not measured specifications.
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const finite=(value,fallback,a,b)=>Number.isFinite(value)?clamp(value,a,b):fallback;
+const layouts={i3:3,i4:4,i5:5,i6:6,v4:4,v6:6,flat4:4,flat6:6,v8:8,v10:10,v12:12};
+export function acousticProfileFor(config={}) {
+  const cylinders=layouts[config.engineLayout];if(!cylinders)return null;
+  const perCylinder=Math.PI/4*(finite(config.bore,86,40,180)/1000)**2*(finite(config.stroke,86,30,180)/1000)*1000;
+  const disp=perCylinder*cylinders,cam=finite(config.camAggression,.4,0,1),valves=finite(config.valvesPerCylinder,4,2,5);
+  const turbo=config.induction==='turbo',ohv=config.valvetrainLayout==='ohv',banked=/^(v|flat)/.test(config.engineLayout);
+  const crossplane=config.engineLayout==='v8'&&config.v8Crank!=='flatplane';
+  const banks=!banked?Array(cylinders).fill(0):crossplane?[0,1,0,1,1,0,1,0]:Array.from({length:cylinders},(_,i)=>i%2);
+  const header=config.headerType??'cast';
+  const runnerBase={cast:.48,shorty:.50,fourtwoone:.50,fourone:.62,equal:.50,unequal:.50}[header]??.48;
+  const runner=finite(config.exhaustRunnerM,runnerBase,.15,1.5);
+  const variations=header==='equal'||header==='fourone'||header==='fourtwoone'?[.99,1.01,1,1]:header==='unequal'?[.62,.94,1.46,.98]:[.88,1.04,.96,1.12];
+  const collector=finite(config.collectorLengthM,turbo?1.1:ohv?1.8:1.5,.3,3);
+  const tailpipe=finite(config.tailpipeLengthM,2.4+disp*.04,.5,5);
+  const cutoff=clamp(1600+cam*1400+(valves-2)*350+({cast:-100,shorty:200,fourone:350,equal:150,unequal:-100}[header]??0)-(turbo?1450:0),650,6500);
+  const overlap=finite(config.camOverlapDeg,Math.max(0,(cam-.2)*70),0,100);
+  const airCleaner=config.airCleaner==='auto'||!config.airCleaner?(config.intakeType==='itb'?'trumpets':'airbox'):config.airCleaner;
+  const profile={cylinders,banks,banked,layout:config.engineLayout,crossplane,
+    runners:Array.from({length:cylinders},(_,i)=>runner*variations[i%4]),collector,tailpipe,cutoff,
+    pulseMs:clamp((2.6+perCylinder*4.5)/(1+.7*cam*(valves/4)),1.5,9),turbo,induction:config.induction??'na',
+    displacementL:disp,perCylinderL:perCylinder,compression:finite(config.compressionRatio,10,6,16),
+    cam,overlap,idleOverlap:config.camOverlapDeg!==undefined?overlap:overlap*(config.liftSystem&&config.liftSystem!=='none'?.18:config.vvtMode==='dual'?.35:config.vvtMode==='intake'?.6:1),redline:finite(config.redline,6600,3000,18000),flywheel:finite(config.flywheelInertiaKgM2,.18,.04,1),
+    idle:finite(config.acousticIdleRpm,config.engineLayout==='v8'?(crossplane?650:860):800,500,1600),
+    intake:config.intakeType??'plenum',intakeRunner:{long:.48,medium:.34,short:.20}[config.runnerLength]??.34,
+    injection:config.injectionType??'port',carbSecondary:config.carbSecondary??'progressive',airCleaner,
+    camDrive:config.camDrive??'chain',crossover:banked?(config.exhaustCrossover??'none'):'none',
+    catalyst:config.catalyst??'stock',valvetrain:config.valvetrainLayout??'dohc',valves,
+    lift:config.liftSystem??'none',liftRpm:finite(config.liftSwitchRpm,6000,2000,12000),exhaust:config.exhaustType??'street',
+    texture:finite(config.soundTexture,.62,0,1)};
+  // Hardware signature deliberately excludes preset name, calibration ID, manufacturer and output ratings.
+  return {...profile,id:JSON.stringify(profile)};
+}
 const read=(buffer,index,delay)=>{const pos=(index-delay+buffer.length*2)%buffer.length,a=Math.floor(pos),t=pos-a;return buffer[a]*(1-t)+buffer[(a+1)%buffer.length]*t;};
 export class EngineAcousticModel {
-  constructor(sr=48000){this.sr=sr;this.phase=0;this.slot=0;this.events=0;this.seed=713;this.rpm=900;this.throttle=0;this.load=0;this.active=0;this.fuel=1;this.cut=false;this.target={rpm:900,throttle:0,load:0,active:false};this.configure(acousticProfiles.b234r);}
+  constructor(sr=48000){this.sr=sr;this.phase=0;this.slot=0;this.events=0;this.seed=713;this.rpm=900;this.throttle=0;this.load=0;this.active=0;this.fuel=1;this.cut=false;this.target={rpm:900,throttle:0,load:0,active:false};this.configure(acousticProfileFor({engineLayout:'i4'}));this.huntPhase=0;this.drivePhase=0;this.pumpPhase=0;this.injectorEnv=0;this.pumpEnv=0;this.rippleRpm=0;this.lastPulseAmplitude=0;}
   configure(profile){
     if(this.profile?.id===profile.id)return;
     this.transitionL=this.lastL??0;this.transitionR=this.lastR??0;
     this.transitionI=this.lastI??0;this.transitionM=this.lastM??0;this.active=0;
     this.profile=profile;this.slot=0;this.phase=0;this.index=0;
     this.slow=new Float64Array(profile.cylinders);this.fast=new Float64Array(profile.cylinders);
-    this.lines=Array.from({length:profile.cylinders},()=>new Float32Array(4096));
-    this.collectors=[new Float32Array(4096),new Float32Array(4096)];
-    this.low=[0,0];this.hpX=[0,0];this.hpY=[0,0];this.intakeLow=0;this.intakeHigh=0;this.mechLow=0;
+    this.bufferSize=Math.max(4096,2**Math.ceil(Math.log2(this.sr*.05)));
+    this.lines=Array.from({length:profile.cylinders},()=>new Float32Array(this.bufferSize));
+    this.collectors=[new Float32Array(this.bufferSize),new Float32Array(this.bufferSize)];
+    this.crossoverLow=0;this.low=[0,0];this.hpX=[0,0];this.hpY=[0,0];this.intakeLow=0;this.intakeHigh=0;this.mechLow=0;
   }
-  update(message){if(acousticProfiles[message.profile])this.configure(acousticProfiles[message.profile]);this.target={...this.target,...message};}
+  update(message){if(message.components?.id)this.configure(message.components);this.target={...this.target,...message};}
   noise(){this.seed=(Math.imul(this.seed,1664525)+1013904223)>>>0;return this.seed/2147483648-1;}
   render(outputs){
     const [exhaust,intake,mechanical,right]=outputs,n=exhaust.length,p=this.profile,sr=this.sr,t=this.target;
     if(!t.active && this.active<1e-6){outputs.forEach(channel=>channel.fill(0));return;}
     const smoothing=1-Math.exp(-1/(sr*.035)),fade=1-Math.exp(-1/(sr*.025)),transitionDecay=Math.exp(-1/(sr*.012));
     const speed=520; // assumed mean exhaust acoustic speed, m/s
-    const runnerScale=t.header==='unequal'?1.35:t.header==='equal'?.98:1;
+    const runnerScale=1;
     const delays=p.runners.map(length=>(length*runnerScale+p.collector)*sr/speed);
     const reflections=p.runners.map(length=>length*2*sr/speed);
     const tailDelay=p.tailpipe*2*sr/speed;
-    const restriction=t.exhaust==='restrictive'?.65:t.exhaust==='race'?1.3:1;
-    const lp=1-Math.exp(-2*Math.PI*p.cutoff*restriction/sr),hp=Math.exp(-2*Math.PI*32/sr);
+    const restriction=p.exhaust==='restrictive'?.65:p.exhaust==='race'?1.3:p.exhaust==='performance'?1.08:1;
+    const catalyst=p.catalyst==='none'?1.15:p.catalyst==='high_flow'?1.06:.95;
+    const lp=1-Math.exp(-2*Math.PI*p.cutoff*restriction*catalyst/sr),hp=Math.exp(-2*Math.PI*32/sr);
     const slowDecay=Math.exp(-1/(sr*p.pulseMs*.001)),fastDecay=Math.exp(-1/(sr*.00035));
-    const intakeLp=1-Math.exp(-2*Math.PI*(p.id==='f20c'?2600:1600)/sr),intakeHp=1-Math.exp(-2*Math.PI*300/sr);
+    const intakeCutoff=(850+550/p.intakeRunner)*(p.airCleaner==='airbox'?.70:p.airCleaner==='trumpets'?1.3:1);
+    const intakeLp=1-Math.exp(-2*Math.PI*intakeCutoff/sr),intakeHp=1-Math.exp(-2*Math.PI*300/sr);
+    const injectionGain=p.injection==='direct'?.0035:p.injection==='dual'?.0025:p.injection==='port'?.0009:p.injection==='tbi'?.0013:0;
+    const tickDecay=Math.exp(-1/(sr*.0012)),pumpDecay=Math.exp(-1/(sr*.0018));
+    const inertiaScale=clamp(.18/p.flywheel,.3,2.4);
+    const overlapFactor=Math.pow(clamp((p.idleOverlap-8)/55,0,1),1.25);
     for(let i=0;i<n;i++){
       this.rpm+=(clamp(t.rpm??900,0,14000)-this.rpm)*smoothing;
       this.throttle+=(clamp(t.throttle??0,0,1)-this.throttle)*smoothing;
       this.load+=(clamp(t.load??0,0,1)-this.load)*smoothing;
       this.active+=((t.active?1:0)-this.active)*fade;
-      if(this.throttle<.035&&this.rpm>1900)this.cut=true;
+      if(p.injection==='carb')this.cut=false;
+      else if(this.throttle<.035&&this.rpm>1900)this.cut=true;
       else if(this.throttle>.065||this.rpm<1400)this.cut=false;
       this.fuel+=((this.cut?0:1)-this.fuel)*fade;
-      const step=this.rpm/120*p.cylinders/sr;
+      const idleBlend=clamp(1-(this.rpm-p.idle-150)/1200,0,1)*clamp(1-this.throttle/.4,0,1);
+      const lope=overlapFactor*idleBlend;
+      this.huntPhase=(this.huntPhase+this.rpm/240/sr)%1;
+      const hunt=Math.sin(this.huntPhase*2*Math.PI);
+      this.rippleRpm=this.rpm*lope*.07*inertiaScale*hunt;
+      const eventRpm=Math.max(0,this.rpm+this.rippleRpm);
+      const step=eventRpm/120*p.cylinders/sr;
       this.phase+=step;
       if(this.phase>=1){
         this.phase-=1;const cylinder=this.slot;
-        const variation=1+this.noise()*.035;
-        const amplitude=(.20+this.load*.80)*this.fuel*variation;
+        const variation=1+this.noise()*(.015+p.texture*.02+lope*.48)+lope*.30*hunt;
+        const volume=clamp(Math.sqrt(p.perCylinderL/.55),.65,1.5)*clamp((p.compression/10)**.25,.85,1.18);
+        const limiter=this.rpm>=p.redline-50 && Math.floor(this.events/p.cylinders)%2===0?0:1;
+        const amplitude=(.20+this.load*.80)*this.fuel*variation*volume*limiter;
+        this.lastPulseAmplitude=amplitude;
+        this.injectorEnv+=this.fuel;
         this.slow[cylinder]+=amplitude;this.fast[cylinder]+=amplitude;
         this.slot=(this.slot+1)%p.cylinders;this.events++;
       }
@@ -78,22 +117,39 @@ export class EngineAcousticModel {
         const raw=this.low[b]/Math.sqrt(p.cylinders)*(p.turbo?.60:1);
         const y=hp*(this.hpY[b]+raw-this.hpX[b]);this.hpX[b]=raw;this.hpY[b]=y;
       }
-      const stereo=p.cylinders===8&&right;
-      exhaust[i]=(stereo?this.hpY[0]+this.hpY[1]*.35:this.hpY[0]+this.hpY[1])*this.active*.75;
-      if(right)right[i]=(stereo?this.hpY[1]+this.hpY[0]*.35:this.hpY[0]+this.hpY[1])*this.active*.75;
+      let outputL=this.hpY[0],outputR=this.hpY[1];
+      if(p.crossover==='x'){
+        const l=outputL,r=outputR;outputL=l*.65+r*.35;outputR=r*.65+l*.35;
+      } else if(p.crossover==='h'){
+        this.crossoverLow+=(outputL-outputR-(this.crossoverLow??0))*.02;
+        const balance=this.crossoverLow*.10;outputL-=balance;outputR+=balance;
+      }
+      const stereo=p.banked&&right;
+      exhaust[i]=(stereo?outputL+outputR*.35:outputL+outputR)*this.active*.75;
+      if(right)right[i]=(stereo?outputR+outputL*.35:outputL+outputR)*this.active*.75;
       const air=this.noise();
       this.intakeLow+=(air*(.18+intakeExcitation)-this.intakeLow)*intakeLp;
       this.intakeHigh+=(this.intakeLow-this.intakeHigh)*intakeHp;
-      const lift=p.id==='f20c'?1+.4*clamp((this.rpm-5600)/600,0,1):1;
-      intake[i]=(this.intakeLow-this.intakeHigh)*this.throttle*lift*this.active*.075;
+      const lift=p.lift!=='none'?1+(p.lift==='aggressive'?.4:.2)*clamp((this.rpm-p.liftRpm+250)/600,0,1):1;
+      const cleanerGain=p.airCleaner==='airbox'?.72:p.airCleaner==='trumpets'?1.3:1.1;
+      const secondary=p.injection==='carb'&&p.carbSecondary==='progressive'?(.75+.65*clamp((this.throttle-.5)/.4,0,1)):1;
+      const intakeGain=p.intake==='itb'?1.25:p.intake==='dualrunner'?(this.rpm>4500?1.12:1):1;
+      intake[i]=(this.intakeLow-this.intakeHigh)*this.throttle*lift*cleanerGain*secondary*intakeGain*this.active*.075;
       this.mechLow+=(air-this.mechLow)*.08;
-      mechanical[i]=(air-this.mechLow)*(.002+this.rpm/14000*.007)*this.active;
+      this.injectorEnv*=tickDecay;this.pumpEnv*=pumpDecay;
+      this.pumpPhase+=this.rpm/120*3/sr;
+      if(this.pumpPhase>=1){this.pumpPhase-=1;if(p.injection==='direct'||p.injection==='dual')this.pumpEnv=1;}
+      this.drivePhase=(this.drivePhase+this.rpm/60*(p.camDrive==='gear'?12:6)/sr)%1;
+      const valveNoise=(air-this.mechLow)*(.002+this.rpm/14000*.007)*(p.valvetrain==='ohv'?1.15:1)*(.7+p.texture*.6);
+      const injectorTick=air*this.injectorEnv*injectionGain+air*this.pumpEnv*injectionGain*.5;
+      const drive=Math.sin(this.drivePhase*2*Math.PI)*(p.camDrive==='gear'?.0035:p.camDrive==='chain'?.0006:0);
+      mechanical[i]=(valveNoise+injectorTick+drive)*this.active;
       const tail=transitionDecay;
       this.transitionL*=tail;this.transitionR*=tail;this.transitionI*=tail;this.transitionM*=tail;
       exhaust[i]+=this.transitionL;if(right)right[i]+=this.transitionR;
       intake[i]+=this.transitionI;mechanical[i]+=this.transitionM;
       this.lastL=exhaust[i];this.lastR=right?right[i]:exhaust[i];this.lastI=intake[i];this.lastM=mechanical[i];
-      this.index=(this.index+1)%4096;
+      this.index=(this.index+1)%this.bufferSize;
     }
   }
 }
@@ -105,3 +161,4 @@ if(typeof registerProcessor==='function') {
   }
   registerProcessor('apex-engine-acoustics',EngineAcousticProcessor);
 }
+

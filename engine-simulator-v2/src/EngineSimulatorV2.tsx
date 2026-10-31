@@ -44,6 +44,16 @@ type ApplicationType = "car";
 
 export type SimConfig = {
   audioModel?: "legacy" | "acoustic";
+  airCleaner?: "auto" | "airbox" | "open_filter" | "trumpets";
+  carbSecondary?: "progressive" | "synchronous";
+  camDrive?: "belt" | "chain" | "gear";
+  exhaustCrossover?: "none" | "h" | "x";
+  catalyst?: "stock" | "high_flow" | "none";
+  camOverlapDeg?: number;
+  flywheelInertiaKgM2?: number;
+  exhaustRunnerM?: number;
+  collectorLengthM?: number;
+  tailpipeLengthM?: number;
   calibrationId?: string;
   calibrationEnabled?: boolean;
   compressorMap?: CompressorMapKey;
@@ -483,6 +493,7 @@ const legacyPresets: EnginePreset[] = [
 const presets = expandFactoryPresets(legacyPresets);
 
 const defaultConfig: SimConfig = {
+  audioModel: "acoustic", airCleaner:"auto",carbSecondary:"progressive",camDrive:"chain",exhaustCrossover:"none",catalyst:"stock",flywheelInertiaKgM2:.18,
   compressorMap: "generic",
   calibrationEnabled: true,
   gameMeta: { name: "Saabish turbo" },
@@ -546,7 +557,17 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     ...defaultConfig,
     ...config,
     applicationType: "car",
-    audioModel: config.audioModel === "acoustic" ? "acoustic" : "legacy",
+    audioModel: config.audioModel === "legacy" ? "legacy" : "acoustic",
+    airCleaner: coerceOption(config.airCleaner,["auto","airbox","open_filter","trumpets"] as const,"auto"),
+    carbSecondary: coerceOption(config.carbSecondary,["progressive","synchronous"] as const,"progressive"),
+    camDrive: coerceOption(config.camDrive,["belt","chain","gear"] as const,"chain"),
+    exhaustCrossover: coerceOption(config.exhaustCrossover,["none","h","x"] as const,"none"),
+    catalyst: coerceOption(config.catalyst,["stock","high_flow","none"] as const,"stock"),
+    camOverlapDeg: Number.isFinite(config.camOverlapDeg)?clamp(config.camOverlapDeg!,0,100):undefined,
+    flywheelInertiaKgM2: Number.isFinite(config.flywheelInertiaKgM2)?clamp(config.flywheelInertiaKgM2!,.04,1):.18,
+    exhaustRunnerM: Number.isFinite(config.exhaustRunnerM)?clamp(config.exhaustRunnerM!,.15,1.5):undefined,
+    collectorLengthM: Number.isFinite(config.collectorLengthM)?clamp(config.collectorLengthM!,.3,3):undefined,
+    tailpipeLengthM: Number.isFinite(config.tailpipeLengthM)?clamp(config.tailpipeLengthM!,.5,5):undefined,
     compressorMap: coerceOption(config.compressorMap, ["generic","g25-550","gtx3071r-gen2"] as const, "generic"),
     calibrationId: calibrationById(config.calibrationId)?.id,
     calibrationEnabled: config.calibrationEnabled !== false,
@@ -1069,7 +1090,7 @@ function stepRuntime(config: SimConfig, runtime: RuntimeState, targetThrottle: n
   const throttle = throttleAfterStep(runtime.throttle,targetThrottle,dt);
   const point = solvePoint(config,{...runtime,throttle});
   const brakeTorque = config.dynoBrakeLoad + runtime.rpm * 0.00145;
-  const inertiaKgM2 = 0.18 + point.dispL * 0.07 + config.dynoRollerInertia * 0.018;
+  const inertiaKgM2 = (config.flywheelInertiaKgM2??.18) + point.dispL * 0.07 + config.dynoRollerInertia * 0.018;
   const netTorque = point.torqueLbFt-brakeTorque;
   const rpm = runtime.rpm + angularAccelerationRpmS(netTorque,inertiaKgM2)*dt;
   // Idle regulation and rev limiting are explicit boundary models.
@@ -1263,7 +1284,8 @@ export default function EngineSimulatorV2() {
   const customPresets = useMemo(() => filteredPresets.filter((p) => p.group === "custom"), [filteredPresets]);
   const userPresets = useMemo(() => filteredPresets.filter((p) => p.group === "saved"), [filteredPresets]);
 
-  const { ensureAudio, acousticStatus } = useEngineAudio(config, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
+  const acousticHardware = useMemo(()=>acousticProfileFor({...config,acousticIdleRpm:resolveIdleRpm(config)}),[config]);
+  const { ensureAudio, acousticStatus } = useEngineAudio({...config,acousticIdleRpm:resolveIdleRpm(config)}, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
 
   useEffect(() => {
     runRuntimeSelfChecks();
@@ -1936,19 +1958,37 @@ export default function EngineSimulatorV2() {
               {tab === "audio" && (
                 <div className="grid gap-4">
                   <div className="rounded-xl border border-sky-500/30 p-3 text-sm">
-                    <label htmlFor="audio-model" className="block mb-2 text-slate-300">Sound model comparison</label>
-                    <select id="audio-model" aria-label="Sound model comparison" className={UI.select} value={config.audioModel??'legacy'} onChange={e=>updateConfig('audioModel',e.target.value as 'legacy'|'acoustic')}>
-                      <option value="legacy">Established engine voice</option>
-                      <option value="acoustic" disabled={!acousticProfileFor(config)}>Acoustic prototype · exhaust paths</option>
+                    <label htmlFor="audio-model" className="block mb-2 text-slate-300">Sound model</label>
+                    <select id="audio-model" aria-label="Sound model" className={UI.select} value={config.audioModel??'acoustic'} onChange={e=>updateConfig('audioModel',e.target.value as 'legacy'|'acoustic')}>
+                      <option value="legacy">Legacy engine voice</option>
+                      <option value="acoustic" disabled={!acousticProfileFor(config)}>Component acoustics · default</option>
                     </select>
-                    <p className="mt-2 text-xs text-slate-400">{acousticStatus==='ready'?'Acoustic prototype active · not recording-calibrated':acousticStatus==='off'?'Audio is off · enable it to audition':acousticStatus==='loading'?'Loading acoustic model…':acousticStatus==='fallback'?'Acoustic model unavailable · established voice is playing':acousticStatus==='unsupported'?'This engine uses its established voice':'Established voice selected'}. Audio must be enabled to audition.</p>
+                    <p className="mt-2 text-xs text-slate-400">{acousticStatus==='ready'?'Component acoustics active':acousticStatus==='off'?'Audio is off · enable it to audition':acousticStatus==='loading'?'Loading acoustic model…':acousticStatus==='fallback'?'Acoustic model unavailable · established voice is playing':acousticStatus==='unsupported'?'This engine uses its established voice':'Legacy voice selected'}. Audio must be enabled to audition.</p>
                     <div className="mt-3 flex flex-wrap gap-2">{[['B234R','Saab B234R'],['Chevrolet LS3 6.2','Chevrolet LS3'],['Honda F20C','Honda F20C']].map(([name,label])=><Button key={name} className={UI.buttonOutline} onClick={()=>{const preset=presets.find(p=>p.name===name);if(preset){applyPreset(preset);setConfig(current=>({...current,audioModel:'acoustic'}));}}}>Try {label}</Button>)}</div>
-                    <p className="mt-2 text-xs text-slate-400">Prototype geometry, exhaust resonances and room responses are modelled assumptions. They have not been matched to reference recordings. Lift off in Drive to hear inferred fuel-cut overrun; firing-mode overrides apply to the established voice.</p>
+                    <p className="mt-2 text-xs text-slate-400">Sound follows the hardware below, not the engine name. Dimensions and cam overlap are inferred unless you set them. Room responses are synthetic; recordings have not validated accuracy.</p>
                   </div>
 
+                  {acousticHardware && <details open className="rounded-xl border border-slate-700 p-3 text-sm text-slate-300"><summary className="cursor-pointer">Acoustic components and assumptions</summary>
+                    <p className="my-2 text-xs text-slate-400">{acousticHardware.cylinders} cylinders · {fmt(acousticHardware.displacementL,1)} L · {acousticHardware.banked?'Separate banks':'Single collector'} · {config.camOverlapDeg===undefined?'inferred':'set'} idle overlap {fmt(acousticHardware.idleOverlap)}° · idle {fmt(resolveIdleRpm(config))} RPM. Existing cam, injection, intake, header and exhaust options are under Engine.</p>
+                    <div className="grid gap-3">
+                      <label>Air cleaner<select aria-label="Air cleaner" className={UI.select} value={config.airCleaner??'auto'} onChange={e=>updateConfig('airCleaner',e.target.value as SimConfig['airCleaner'])}><option value="auto">Infer from intake</option><option value="airbox">Enclosed airbox</option><option value="open_filter">Open filter</option><option value="trumpets">Open trumpets</option></select></label>
+                      <label>Cam drive<select aria-label="Cam drive" className={UI.select} value={config.camDrive??'chain'} onChange={e=>updateConfig('camDrive',e.target.value as SimConfig['camDrive'])}><option value="chain">Chain · assumed</option><option value="belt">Belt</option><option value="gear">Gear drive</option></select></label>
+                      {config.injectionType==='carb' && <label>Carb secondaries<select aria-label="Carb secondaries" className={UI.select} value={config.carbSecondary??'progressive'} onChange={e=>updateConfig('carbSecondary',e.target.value as SimConfig['carbSecondary'])}><option value="progressive">Progressive</option><option value="synchronous">Synchronous</option></select></label>}
+                      {acousticHardware.banked && <label>Exhaust crossover<select aria-label="Exhaust crossover" className={UI.select} value={config.exhaustCrossover??'none'} onChange={e=>updateConfig('exhaustCrossover',e.target.value as SimConfig['exhaustCrossover'])}><option value="none">Independent banks · assumed</option><option value="h">H-pipe</option><option value="x">X-pipe</option></select></label>}
+                      <label>Catalyst<select aria-label="Catalyst" className={UI.select} value={config.catalyst??'stock'} onChange={e=>updateConfig('catalyst',e.target.value as SimConfig['catalyst'])}><option value="stock">Stock · assumed</option><option value="high_flow">High flow</option><option value="none">None</option></select></label>
+                      <label className="flex items-center gap-2"><input type="checkbox" checked={config.camOverlapDeg!==undefined} onChange={e=>updateConfig('camOverlapDeg',e.target.checked?acousticHardware.overlap:undefined)}/>Set explicit cam overlap</label>
+                      {config.camOverlapDeg!==undefined && <LabeledSlider label="Cam overlap" value={config.camOverlapDeg} min={0} max={100} onChange={v=>updateConfig('camOverlapDeg',v)} display={`${fmt(config.camOverlapDeg)}° · sound estimate`} />}
+                      <LabeledSlider label="Flywheel inertia" value={config.flywheelInertiaKgM2??.18} min={.04} max={1} step={.02} onChange={v=>updateConfig('flywheelInertiaKgM2',v)} display={`${fmt(config.flywheelInertiaKgM2??.18,2)} kg·m² · affects Drive`} />
+                      <LabeledSlider label="Idle speed trim" value={config.idleRpm} min={650} max={1200} step={10} onChange={v=>updateConfig('idleRpm',v)} display={`${fmt(resolveIdleRpm(config))} RPM resolved`} />
+                      <LabeledSlider label="Exhaust runner length" value={config.exhaustRunnerM??acousticHardware.runners.reduce((a:number,b:number)=>a+b,0)/acousticHardware.cylinders} min={.15} max={1.5} step={.01} onChange={v=>updateConfig('exhaustRunnerM',v)} display={`${fmt(config.exhaustRunnerM??acousticHardware.runners.reduce((a:number,b:number)=>a+b,0)/acousticHardware.cylinders,2)} m · ${config.exhaustRunnerM===undefined?'inferred':'set'}`} />
+                      <LabeledSlider label="Collector length" value={config.collectorLengthM??acousticHardware.collector} min={.3} max={3} step={.05} onChange={v=>updateConfig('collectorLengthM',v)} display={`${fmt(config.collectorLengthM??acousticHardware.collector,2)} m · ${config.collectorLengthM===undefined?'inferred':'set'}`} />
+                      <LabeledSlider label="Tailpipe length" value={config.tailpipeLengthM??acousticHardware.tailpipe} min={.5} max={5} step={.05} onChange={v=>updateConfig('tailpipeLengthM',v)} display={`${fmt(config.tailpipeLengthM??acousticHardware.tailpipe,2)} m · ${config.tailpipeLengthM===undefined?'inferred':'set'}`} />
+                      <Button className={UI.buttonOutline} onClick={()=>setConfig(current=>({...current,exhaustRunnerM:undefined,collectorLengthM:undefined,tailpipeLengthM:undefined,camOverlapDeg:undefined}))}>Restore inferred dimensions and overlap</Button>
+                    </div><p className="mt-2 text-xs text-slate-400">New acoustic geometry, catalyst and overlap controls shape sound only; flywheel inertia also affects acceleration. They do not recalibrate power figures. Aggressive overlap makes idle uneven; carbs alone do not add lope.</p>
+                  </details>}
                   <div className="grid gap-2">
-                    <div className="text-sm text-slate-300">Firing order / pulse mode</div>
-                    <Select value={config.firingSoundMode} onValueChange={(v: FiringSoundMode) => updateConfig("firingSoundMode", v)}>
+                    <div className="text-sm text-slate-300">Legacy firing / pulse override</div>
+                    <Select disabled={config.audioModel!=="legacy"} value={config.firingSoundMode} onValueChange={(v: FiringSoundMode) => updateConfig("firingSoundMode", v)}>
                       <SelectTrigger className={UI.select}><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {getFiringModeOptions(config.engineLayout).map((option) => (
@@ -1977,7 +2017,7 @@ export default function EngineSimulatorV2() {
                   <LabeledSlider label="Sound texture" value={config.soundTexture * 100} onChange={(v) => updateConfig("soundTexture", v / 100)} min={0} max={100} display={`${fmt(config.soundTexture * 100, 0)} %`} />
                   <LabeledSlider label="Room size" value={config.roomSize * 100} onChange={(v) => updateConfig("roomSize", v / 100)} min={0} max={100} display={`${fmt(config.roomSize * 100, 0)} %`} />
                   <div className="rounded-2xl border border-slate-700/60 bg-slate-900/80 p-3 text-sm text-slate-300">
-                    Apex Syndicate audio: engine-specific exhaust pulses, smoother rev transitions and load-sensitive intake and turbo sounds. Try rear exhaust for the engine note, or engine bay for induction detail.
+                    Component acoustics: crank layout, cam, induction, injection and exhaust construction shape the sound. Try rear exhaust for the engine note, or engine bay for intake, injector and cam-drive detail. Legacy voices remain available.
                   </div>
                 </div>
               )}
@@ -2085,5 +2125,6 @@ export default function EngineSimulatorV2() {
     </div>
   );
 }
+
 
 
