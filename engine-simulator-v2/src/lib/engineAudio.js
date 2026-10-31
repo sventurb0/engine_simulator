@@ -552,7 +552,8 @@ export function useEngineAudio(config, point, enabled, throttle) {
   };
 
   useEffect(() => {
-    if (!enabled || config.audioModel !== 'acoustic' || !acousticProfileFor(config)) {
+    if (!enabled) { setAcousticStatus('off'); return; }
+    if (config.audioModel !== 'acoustic' || !acousticProfileFor(config)) {
       setAcousticStatus(config.audioModel === 'acoustic' ? 'unsupported' : 'legacy');
       return;
     }
