@@ -1,3 +1,4 @@
+import { WATTS_PER_HP, NM_PER_LBFT, PA_PER_PSI, KG_S_TO_LB_MIN, powerHpFromTorque, torqueFromPowerHp, bmepPsiFromTorque, fuelProperties, mixtureEfficiency, ignitionEfficiency, injectorCcFromFuel, angularAccelerationRpmS, throttleAfterStep } from "./lib/powertrainMath";
 import { expandFactoryPresets, manufacturerReferences } from "./data/factoryEngines";
 import { useEngineAudio, createProceduralSampleBuffer } from "./lib/engineAudio.js";
 import { clamp, lerp, smoothStep, engineLayouts } from "./lib/engineAudioPrimitives";
@@ -103,6 +104,15 @@ type RuntimeState = {
 };
 
 type SolvePoint = {
+  indicatedHp: number;
+  frictionTorqueLbFt: number;
+  pumpingTorqueLbFt: number;
+  driveLossHp: number;
+  fuelFlowKgHr: number;
+  brakeThermalEfficiency: number;
+  lambda: number;
+  actualAfr: number;
+  ignitionDeg: number;
   rpm: number;
   dispL: number;
   mapKpa: number;
@@ -127,54 +137,12 @@ type SolvePoint = {
 type SweepRow = SolvePoint & { time?: number };
 export type EnginePreset = { name: string; manufacturer?: string; nominalLitres?: number; setupKind?: "existing" | "illustrative"; config: Partial<SimConfig>; group?: "factory" | "custom" | "saved" };
 
-const PA_TO_PSI = 0.0001450377;
+const PA_TO_PSI = 1 / PA_PER_PSI;
 const KELVIN = 273.15;
 const R_AIR = 287.05;
 const GAMMA_AIR = 1.4;
 
 const fmt = (n: number, d = 0) => (Number.isFinite(n) ? n.toFixed(d) : "—");
-
-function getLayoutTorqueBonus(layout: EngineLayout) {
-  switch (layout) {
-    case "v12": return 28;
-    case "v10": return 20;
-    case "v8": return 14;
-    case "i6": return 10;
-    case "v6": return 8;
-    case "flat4": return 5;
-    case "i5": return 5;
-    case "v4": return 4;
-    case "flat6": return 8;
-    default: return 0;
-  }
-}
-
-function getLayoutLowEndBonus(layout: EngineLayout) {
-  switch (layout) {
-    case "v12": return 0.16;
-    case "v10": return 0.12;
-    case "v8": return 0.08;
-    case "i6": return 0.05;
-    case "v6": return 0.04;
-    case "flat4": return 0.02;
-    case "i5": return 0.02;
-    default: return 0;
-  }
-}
-
-function getLayoutAudioWeight(layout: EngineLayout) {
-  switch (layout) {
-    case "v12": return 1.6;
-    case "v10": return 1.45;
-    case "v8": return 1.35;
-    case "i6": return 1.18;
-    case "v6": return 1.12;
-    case "flat4": return 1.05;
-    case "i5": return 1.06;
-    case "v4": return 1.02;
-    default: return 1.0;
-  }
-}
 
 function resolveIdleRpm(config: SimConfig) {
   let base = 800;
@@ -670,10 +638,10 @@ function atmosphere(altitudeM: number, ambientC: number, humidity: number) {
   const lapse = 0.0065;
   const p = p0 * Math.pow(1 - (lapse * altitudeM) / T0, 5.25588);
   const sat = 610.78 * Math.exp((17.2694 * ambientC) / (ambientC + 237.3));
-  const pv = humidity * sat;
+  const pv = Math.min(p * 0.95, clamp(humidity, 0, 1) * sat);
   const pd = Math.max(1000, p - pv);
   const rho = pd / (287.05 * T) + pv / (461.495 * T);
-  return { pressurePa: p, pressurePsi: p * PA_TO_PSI, density: rho, tempK: T };
+  return { pressurePa: p, pressurePsi: p * PA_TO_PSI, density: rho, dryAirFraction: (p-pv)/p, tempK: T };
 }
 
 function displacementLitres(boreMm: number, strokeMm: number, cylinders: number) {
@@ -719,18 +687,21 @@ function estimateVE(config: SimConfig, rpm: number, mapKpa: number, dispL: numbe
 
   let basePeak: number;
   if (config.induction === "na") {
-    basePeak = 0.97 + config.compressionRatio * 0.006 + config.camAggression * 0.095 + config.exhaustFlow * 0.055 + (shape.oversquare ? 0.02 : 0) + (dispL >= 4 ? 0.03 : 0) + hw.vePeakAdj + hw.exhaustAdj;
+    basePeak = 0.82 + config.compressionRatio * 0.006 + config.camAggression * 0.095 + config.exhaustFlow * 0.055 + (shape.oversquare ? 0.02 : 0) + (dispL >= 4 ? 0.03 : 0) + hw.vePeakAdj + hw.exhaustAdj;
   } else if (config.induction === "supercharger") {
     basePeak = 0.93 + config.compressionRatio * 0.004 + config.camAggression * 0.08 + config.exhaustFlow * 0.05 + hw.vePeakAdj + hw.exhaustAdj;
   } else {
     basePeak = 0.91 + config.compressionRatio * 0.004 + config.exhaustFlow * 0.10 + config.camAggression * 0.08 + (config.turboFamily === "large" ? 0.02 : 0) + hw.vePeakAdj + hw.exhaustAdj;
   }
 
+  // Smoothly saturate port efficiency without flattening the torque peak.
+  basePeak = 0.65 + 0.47 * Math.tanh((basePeak - 0.65) / 0.47);
   const rpmShape = Math.exp(-Math.pow((rpm - peakRpm) / Math.max(width, 900), 2));
   const lowFloor = ((config.induction === "na"
     ? clamp(0.69 + (dispL >= 4 ? 0.08 : 0) + (shape.undersquare ? 0.03 : 0), 0.65, 0.85)
     : turboFamilies[config.turboFamily].lowRpmFactor) + hw.lowFloorAdj);
-  const veBase = lowFloor + (basePeak - lowFloor) * rpmShape;
+  const effectiveFloor = Math.min(lowFloor, basePeak * 0.88);
+  const veBase = effectiveFloor + (basePeak - effectiveFloor) * rpmShape;
 
   const loadFactor = config.induction === "na"
     ? clamp(0.86 + (mapKpa - 30) / 92, 0.72, isLargeNa ? 1.06 : 1.04)
@@ -753,18 +724,8 @@ function mbtTimingAdvance(rpm: number, mapKpa: number) {
   return lerp(lowLoad, highLoad, clamp((mapKpa - 40) / 180, 0, 1));
 }
 
-function timingEfficiency(actual: number, mbt: number) {
-  const diff = Math.max(0, mbt - actual);
-  return clamp(1 - diff * 0.012, 0.82, 1.0);
-}
-
-function torqueEfficiencyFromAFR(afr: number, targetAfr: number) {
-  const delta = Math.abs(afr - targetAfr);
-  return clamp(1 - delta * 0.028, 0.86, 1.0);
-}
-
-function fuelTargetAfr(induction: InductionType, load: number) {
-  return induction === "na" ? lerp(14.7, 12.9, load) : lerp(14.7, 11.8, load);
+function fuelTargetAfr(induction: InductionType, load: number, fuelType: FuelType) {
+  return fuelProperties(fuelType).stoich * lerp(1, induction === 'na' ? 0.88 : 0.80, load);
 }
 
 function compressorEfficiency(pr: number, family: TurboFamily) {
@@ -787,16 +748,10 @@ function pressureDropAcrossIC(type: IntercoolerType, boostPsi: number, coreSize:
   return clamp((0.20 + Math.pow(Math.max(boostPsi, 0) / 18, 1.0) * (0.90 - coreSize * 0.45)) * typeScale, 0.10, 2.2);
 }
 
-function injectorCcMinForPower(hp: number, bsfc: number, cylinders: number, duty: number) {
-  const fuelLbHr = hp * bsfc;
-  const perInjectorLbHr = fuelLbHr / (cylinders * Math.max(duty, 0.3));
-  return perInjectorLbHr * 10.5;
-}
-
 function superchargerPressureRatio(type: BlowerType, driveRatio: number, rpm: number, throttle: number, capPsi: number) {
   const capPR = 1 + capPsi / 14.7;
   const speedShape = type === "centrifugal" ? Math.pow(clamp(rpm / 7000, 0, 1.2), 1.7) : 0.44 + 0.56 * clamp(rpm / 6500, 0, 1.1);
-  const pr = 1 + (capPR - 1) * speedShape * (0.22 + 0.78 * throttle) * clamp(driveRatio / 2.2, 0.45, 1.5);
+  const pr = 1 + (capPR - 1) * speedShape * Math.pow(throttle, 1.2) * clamp(driveRatio / 2.2, 0.45, 1.5);
   return clamp(pr, 1, capPR);
 }
 
@@ -809,23 +764,21 @@ function getHardwareState(config: SimConfig, rpm: number) {
     lowFloorAdj: 0,
     peakRpmShift: 0,
     rpmCeilingAdj: 0,
-    torquePerAirAdj: 0,
     timingBonus: 0,
     chargeTempRelief: 0,
     spoolStartAdj: 0,
     spoolFullAdj: 0,
     topEndHoldAdj: 0,
     compressorEffAdj: 0,
-    lowTorqueBmepAdj: 0,
     frictionScale: 1,
     exhaustAdj: 0,
   };
 
   switch (config.valvesPerCylinder) {
     case 2:
-      hw.vePeakAdj -= 0.055; hw.lowFloorAdj += 0.09; hw.lowTorqueBmepAdj += 15; hw.peakRpmShift -= 380; hw.rpmCeilingAdj -= 650; break;
+      hw.vePeakAdj -= 0.055; hw.lowFloorAdj += 0.09; hw.peakRpmShift -= 380; hw.rpmCeilingAdj -= 650; break;
     case 3:
-      hw.vePeakAdj -= 0.02; hw.lowFloorAdj += 0.04; hw.lowTorqueBmepAdj += 7; hw.peakRpmShift -= 160; hw.rpmCeilingAdj -= 180; break;
+      hw.vePeakAdj -= 0.02; hw.lowFloorAdj += 0.04; hw.peakRpmShift -= 160; hw.rpmCeilingAdj -= 180; break;
     case 4:
       hw.vePeakAdj += 0.015; hw.rpmCeilingAdj += 120; break;
     case 5:
@@ -834,18 +787,18 @@ function getHardwareState(config: SimConfig, rpm: number) {
 
   switch (config.valvetrainLayout) {
     case "ohv":
-      hw.lowTorqueBmepAdj += 16; hw.vePeakAdj -= 0.03; hw.peakRpmShift -= 260; hw.rpmCeilingAdj -= 520; hw.frictionScale *= 1.05; break;
+      hw.vePeakAdj -= 0.03; hw.peakRpmShift -= 260; hw.rpmCeilingAdj -= 520; hw.frictionScale *= 1.05; break;
     case "sohc":
-      hw.lowTorqueBmepAdj += 6; hw.peakRpmShift -= 80; hw.rpmCeilingAdj -= 120; break;
+      hw.peakRpmShift -= 80; hw.rpmCeilingAdj -= 120; break;
     case "dohc":
       hw.vePeakAdj += 0.02; hw.peakRpmShift += 120; hw.rpmCeilingAdj += 260; break;
   }
 
   switch (config.vvtMode) {
     case "intake":
-      hw.lowFloorAdj += 0.035; hw.veWidthMult *= 1.08; hw.lowTorqueBmepAdj += 10; hw.timingBonus += 0.7; break;
+      hw.lowFloorAdj += 0.035; hw.veWidthMult *= 1.08; hw.timingBonus += 0.7; break;
     case "dual":
-      hw.lowFloorAdj += 0.06; hw.veWidthMult *= 1.14; hw.lowTorqueBmepAdj += 16; hw.timingBonus += 1.4; hw.peakRpmShift += 70; break;
+      hw.lowFloorAdj += 0.06; hw.veWidthMult *= 1.14; hw.timingBonus += 1.4; hw.peakRpmShift += 70; break;
   }
 
   if (config.liftSystem !== "none") {
@@ -857,18 +810,18 @@ function getHardwareState(config: SimConfig, rpm: number) {
 
   switch (config.intakeType) {
     case "variable":
-      hw.lowTorqueBmepAdj += 14; hw.lowFloorAdj += 0.04; hw.veWidthMult *= 1.10; break;
+      hw.lowFloorAdj += 0.04; hw.veWidthMult *= 1.10; break;
     case "dualrunner":
-      hw.lowTorqueBmepAdj += 10; hw.lowFloorAdj += 0.025; hw.veWidthMult *= 1.07; break;
+      hw.lowFloorAdj += 0.025; hw.veWidthMult *= 1.07; break;
     case "itb":
       hw.vePeakAdj += 0.03; hw.lowFloorAdj -= 0.015; hw.peakRpmShift += 220; hw.rpmCeilingAdj += 120; break;
   }
 
   switch (config.runnerLength) {
     case "long":
-      hw.lowTorqueBmepAdj += 10; hw.lowFloorAdj += 0.04; hw.peakRpmShift -= 220; break;
+      hw.lowFloorAdj += 0.04; hw.peakRpmShift -= 220; break;
     case "short":
-      hw.lowTorqueBmepAdj -= 4; hw.lowFloorAdj -= 0.02; hw.vePeakAdj += 0.02; hw.peakRpmShift += 220; break;
+      hw.lowFloorAdj -= 0.02; hw.vePeakAdj += 0.02; hw.peakRpmShift += 220; break;
   }
 
   switch (config.injectionType) {
@@ -877,9 +830,9 @@ function getHardwareState(config: SimConfig, rpm: number) {
     case "tbi":
       hw.lowFloorAdj -= 0.015; hw.timingBonus -= 0.8; break;
     case "direct":
-      hw.timingBonus += 1.6; hw.chargeTempRelief += 0.05; hw.lowTorqueBmepAdj += 3; break;
+      hw.timingBonus += 1.6; hw.chargeTempRelief += 0.05; break;
     case "dual":
-      hw.timingBonus += 2.1; hw.chargeTempRelief += 0.07; hw.lowTorqueBmepAdj += 4; hw.vePeakAdj += 0.01; break;
+      hw.timingBonus += 2.1; hw.chargeTempRelief += 0.07; hw.vePeakAdj += 0.01; break;
   }
 
   switch (config.fuelType) {
@@ -899,20 +852,20 @@ function getHardwareState(config: SimConfig, rpm: number) {
     case "performance":
       hw.exhaustAdj += 0.03; hw.topEndHoldAdj += 0.02; break;
     case "race":
-      hw.exhaustAdj += 0.06; hw.topEndHoldAdj += 0.05; hw.lowTorqueBmepAdj -= 2; break;
+      hw.exhaustAdj += 0.06; hw.topEndHoldAdj += 0.05; break;
   }
 
   switch (config.headerType) {
     case "shorty":
-      hw.lowTorqueBmepAdj += 4; break;
+      break;
     case "fourtwoone":
-      hw.lowTorqueBmepAdj += 8; hw.veWidthMult *= 1.04; break;
+      hw.veWidthMult *= 1.04; break;
     case "fourone":
-      hw.vePeakAdj += 0.02; hw.peakRpmShift += 240; hw.lowTorqueBmepAdj -= 4; break;
+      hw.vePeakAdj += 0.02; hw.peakRpmShift += 240; break;
     case "equal":
-      hw.vePeakAdj += 0.02; hw.lowTorqueBmepAdj += 4; hw.exhaustAdj += 0.01; break;
+      hw.vePeakAdj += 0.02; hw.exhaustAdj += 0.01; break;
     case "unequal":
-      hw.lowTorqueBmepAdj += 6; hw.vePeakAdj -= 0.01; hw.veWidthMult *= 1.02; hw.exhaustAdj -= 0.005; break;
+      hw.vePeakAdj -= 0.01; hw.veWidthMult *= 1.02; hw.exhaustAdj -= 0.005; break;
   }
 
   switch (config.frictionClass) {
@@ -923,84 +876,20 @@ function getHardwareState(config: SimConfig, rpm: number) {
 
   if (config.induction === "turbo") {
     switch (config.turboArchitecture) {
-      case "twinscroll": hw.spoolStartAdj -= 240; hw.spoolFullAdj -= 330; hw.lowTorqueBmepAdj += 10; hw.compressorEffAdj += 0.01; break;
-      case "sequential": hw.spoolStartAdj -= 420; hw.spoolFullAdj -= 560; hw.lowTorqueBmepAdj += 14; hw.topEndHoldAdj -= 0.02; break;
-      case "vgt": hw.spoolStartAdj -= 300; hw.spoolFullAdj -= 420; hw.lowTorqueBmepAdj += 9; hw.compressorEffAdj += 0.015; hw.topEndHoldAdj += 0.03; break;
+      case "twinscroll": hw.spoolStartAdj -= 240; hw.spoolFullAdj -= 330; hw.compressorEffAdj += 0.01; break;
+      case "sequential": hw.spoolStartAdj -= 420; hw.spoolFullAdj -= 560; hw.topEndHoldAdj -= 0.02; break;
+      case "vgt": hw.spoolStartAdj -= 300; hw.spoolFullAdj -= 420; hw.compressorEffAdj += 0.015; hw.topEndHoldAdj += 0.03; break;
     }
     if (config.turboBearing === "ball") {
       hw.spoolStartAdj -= 120; hw.spoolFullAdj -= 180;
     }
     switch (config.turbineAR) {
-      case "small": hw.spoolStartAdj -= 260; hw.spoolFullAdj -= 340; hw.lowTorqueBmepAdj += 8; hw.topEndHoldAdj -= 0.05; break;
-      case "large": hw.spoolStartAdj += 240; hw.spoolFullAdj += 340; hw.lowTorqueBmepAdj -= 6; hw.topEndHoldAdj += 0.06; break;
+      case "small": hw.spoolStartAdj -= 260; hw.spoolFullAdj -= 340; hw.topEndHoldAdj -= 0.05; break;
+      case "large": hw.spoolStartAdj += 240; hw.spoolFullAdj += 340; hw.topEndHoldAdj += 0.06; break;
     }
   }
 
   return hw;
-}
-
-function estimateBrakeTorqueFloor(config: SimConfig, rpm: number, throttle: number, dispL: number, boostPsi: number) {
-  const dispCID = dispL * 61.0237;
-  const shape = squareBias(config.bore, config.stroke);
-  const fullLoad = smoothStep(throttle, 0.45, 1.0);
-
-  const displacementBonus = dispL >= 4 ? 18 : dispL >= 3 ? 10 : dispL >= 2.2 ? 4 : 0;
-  const layoutBonus = getLayoutTorqueBonus(config.engineLayout);
-  const strokeBonus = shape.undersquare ? 8 : 0;
-  const compressionBonus = (config.compressionRatio - 9) * 4;
-  const camPenalty = config.camAggression * 10;
-  const exhaustBonus = config.exhaustFlow * 5;
-
-  const hw = getHardwareState(config, rpm);
-  let targetBmep = 148 + displacementBonus + layoutBonus + strokeBonus + compressionBonus - camPenalty + exhaustBonus + hw.lowTorqueBmepAdj;
-
-  let floorPeakRpm = 2800 + config.camAggression * 700 + (shape.oversquare ? 150 : 0) - (shape.undersquare ? 180 : 0) - (dispL >= 4 ? 250 : 0);
-  let lowAnchor = 0.78 + (dispL >= 4 ? 0.06 : 0) + (config.engineLayout === "v8" ? 0.05 : 0) + (shape.undersquare ? 0.03 : 0);
-  let shoulderDrop = 0.18;
-  let torqueShape = 1;
-
-  if (config.induction === "turbo") {
-    const fam = turboFamilies[config.turboFamily];
-    const onsetShift = config.boostOnsetBias;
-    const spoolStart = Math.max(1200, fam.spoolStart + onsetShift + hw.spoolStartAdj);
-    const spoolFull = Math.max(spoolStart + 400, fam.spoolFull + onsetShift + hw.spoolFullAdj);
-    const targetBoost = config.wastegateBasePsi + config.boostControl * (config.turboFamily === "small" ? 6 : config.turboFamily === "medium" ? 10 : 14);
-    const boostProxy = clamp(Math.max(boostPsi, targetBoost * smoothStep(rpm, spoolStart - 450, spoolFull + 250) * 0.88) / Math.max(targetBoost, 1), 0, 1.1);
-    const boostBmepGain = 10.5 + (config.turboFamily === "small" ? 2.0 : config.turboFamily === "medium" ? 1.0 : 0.2);
-    targetBmep += boostProxy * targetBoost * boostBmepGain + config.boostControl * 28;
-
-    floorPeakRpm = clamp(spoolFull + (config.turboFamily === "small" ? 180 : config.turboFamily === "medium" ? 260 : 360) + config.boostTaperBias * 180, 2200, Math.min(config.redline - 900, 5600));
-    lowAnchor = config.turboFamily === "small" ? 0.58 : config.turboFamily === "medium" ? 0.46 : 0.34;
-    shoulderDrop = config.turboFamily === "large" ? 0.10 : 0.13;
-
-    const rpmRise = smoothStep(rpm, 1000, floorPeakRpm);
-    const chargeRise = smoothStep(boostProxy, 0.05, 0.96);
-    const combinedRise = clamp(rpmRise * 0.50 + chargeRise * 0.50, 0, 1);
-    const easedRise = 1 - Math.pow(1 - combinedRise, 1.45);
-    const shoulder = 1 - smoothStep(rpm, floorPeakRpm + 350, floorPeakRpm + 1850) * shoulderDrop;
-    torqueShape = (lowAnchor + (1 - lowAnchor) * easedRise) * shoulder;
-  } else if (config.induction === "supercharger") {
-    targetBmep += boostPsi * 10.0 + config.superchargerDriveRatio * 8;
-    floorPeakRpm = 3000 + (config.blowerType === "centrifugal" ? 650 : 0);
-    lowAnchor = 0.72;
-    shoulderDrop = 0.14;
-    const rise = smoothStep(rpm, 900, Math.max(1800, floorPeakRpm - 350));
-    const shoulder = 1 - smoothStep(rpm, floorPeakRpm + 300, floorPeakRpm + 1900) * shoulderDrop;
-    torqueShape = (lowAnchor + (1 - lowAnchor) * rise) * shoulder;
-  } else {
-    floorPeakRpm = clamp(floorPeakRpm, 1800, 5200);
-    const phase1End = Math.max(1500, floorPeakRpm - 1100);
-    const phase2Start = Math.max(1600, floorPeakRpm - 850);
-    const phase2End = floorPeakRpm + 150;
-    const rise1 = smoothStep(rpm, 900, phase1End);
-    const rise2 = smoothStep(rpm, phase2Start, phase2End);
-    const shapedRise = lowAnchor + (0.92 - lowAnchor) * rise1 + (1 - 0.92) * rise2;
-    const shoulder = 1 - smoothStep(rpm, floorPeakRpm + 350, floorPeakRpm + 2100) * shoulderDrop;
-    torqueShape = shapedRise * shoulder;
-  }
-
-  const brakeTorque = (targetBmep * dispCID / 150.8) * torqueShape * fullLoad;
-  return Math.max(0, brakeTorque);
 }
 
 function solvePoint(config: SimConfig, runtime: RuntimeState): SolvePoint {
@@ -1026,12 +915,12 @@ function solvePoint(config: SimConfig, runtime: RuntimeState): SolvePoint {
     const spoolFull = Math.max(spoolStart + 400, fam.spoolFull + onsetShift + hw.spoolFullAdj);
     const spool = smoothStep(rpm, spoolStart, spoolFull);
     const wgLimit = config.wastegateBasePsi + config.boostControl * (config.turboFamily === "small" ? 6 : config.turboFamily === "medium" ? 10 : 14);
-    const naturalBoostTarget = wgLimit * spool * (0.20 + 0.80 * Math.pow(throttle, 0.86));
+    const naturalBoostTarget = wgLimit * spool * Math.pow(throttle, 1.4);
     const holdBias = config.boostTaperBias * 0.45;
     const topEndHold = 1 + smoothStep(rpm, spoolFull, config.redline - 200) * ((fam.topEndHold + holdBias + hw.topEndHoldAdj) - 1);
     boostPsi = naturalBoostTarget * Math.max(0.78, topEndHold);
     pr = (atm.pressurePsi + boostPsi) / atm.pressurePsi;
-    compressorEff = compressorEfficiency(pr, config.turboFamily) + hw.compressorEffAdj;
+    compressorEff = clamp(compressorEfficiency(pr, config.turboFamily) + hw.compressorEffAdj, 0.4, 0.9);
     preIcTempK = atm.tempK * (1 + (Math.pow(pr, (GAMMA_AIR - 1) / GAMMA_AIR) - 1) / compressorEff);
     shaftSignal = spool;
   }
@@ -1041,7 +930,6 @@ function solvePoint(config: SimConfig, runtime: RuntimeState): SolvePoint {
     boostPsi = Math.max(0, (pr - 1) * atm.pressurePsi);
     compressorEff = blowerTypes[config.blowerType].eff;
     preIcTempK = atm.tempK * (1 + (Math.pow(pr, (GAMMA_AIR - 1) / GAMMA_AIR) - 1) / compressorEff);
-    driveLossHp = boostPsi * blowerTypes[config.blowerType].dragScale * 1.28;
     shaftSignal = clamp((rpm / config.redline) * config.superchargerDriveRatio * 0.6, 0, 1.4);
   }
 
@@ -1050,94 +938,55 @@ function solvePoint(config: SimConfig, runtime: RuntimeState): SolvePoint {
   const mapKpaRaw = config.induction === "na" ? vacuumMapKpa : lerp(vacuumMapKpa, boostedMapKpa, Math.pow(throttle, 0.76));
 
   const icEff = intercoolerEffectiveness(config.intercoolerType, config.icCoreSize, config.vehicleSpeedKph);
-  const icDropPsi = pressureDropAcrossIC(config.intercoolerType, boostPsi, config.icCoreSize);
+  const icDropPsi = pressureDropAcrossIC(config.intercoolerType, boostPsi, config.icCoreSize) * smoothStep(boostPsi, 0, 1) * throttle * throttle;
   const postIcTempK = config.induction === "na" ? atm.tempK : atm.tempK + (preIcTempK - atm.tempK) * (1 - icEff);
   const chargeTempK = postIcTempK;
   const mapKpa = Math.max(25, mapKpaRaw - (config.induction === "na" ? 0 : icDropPsi * 6.894757));
 
-  const ve = estimateVE(config, rpm, mapKpa, dispL);
-  const cyclesPerSec = rpm / 120;
-  const airMassKgS = dispM3 * cyclesPerSec * ve * (mapKpa * 1000) / (R_AIR * chargeTempK);
-  const airLbMin = airMassKgS * 132.277;
-  const load = clamp((mapKpa - 30) / 170, 0, 1);
-  const targetAfr = fuelTargetAfr(config.induction, load);
-  const timingEff = timingEfficiency(runtime.ignitionDeg + hw.timingBonus, mbtTimingAdvance(rpm, mapKpa));
-  const afrEff = torqueEfficiencyFromAFR(runtime.afr, targetAfr);
-  const chargeTempPenalty = clamp(1 - Math.max(0, chargeTempK - 323) * (0.0013 - hw.chargeTempRelief * 0.0005), 0.84, 1.0);
-
-  const layoutTorqueBias = config.engineLayout === "i3" ? 0.10 : config.engineLayout === "v4" ? 0.12 : config.engineLayout === "flat4" ? 0.18 : config.engineLayout === "flat6" ? 0.24 : 0;
-  const torquePerAir = (config.induction === "na" ? 9.5 : config.induction === "supercharger" ? 8.7 : 7.35) + hw.torquePerAirAdj + layoutTorqueBias;
   const valveLimit = valvetrainCeiling(config);
-  const dispShift = dispL >= 2.2 ? -500 : dispL <= 1.8 ? 100 : 0;
-  const tqPeak = config.induction === "na"
-    ? 3500 + config.camAggression * 1500 + (config.bore > config.stroke ? 300 : 0)
-    : config.turboFamily === "small"
-      ? 2400 + dispShift
-      : config.turboFamily === "medium"
-        ? 3200 + dispShift
-        : 4300 + dispShift;
-
-  const lowRpmFactor = config.induction === "na"
-    ? (() => {
-        const bigNaBonus = dispL >= 4 ? 0.18 : dispL >= 3 ? 0.08 : 0;
-        const v8Bonus = getLayoutLowEndBonus(config.engineLayout);
-        const undersquareBonus = config.stroke > config.bore ? 0.06 : 0;
-        const lowStart = clamp(0.73 + bigNaBonus + v8Bonus + undersquareBonus, 0.71, 1.04);
-        return lerp(lowStart, 1.0, smoothStep(rpm, 1000, 2900));
-      })()
-    : config.turboFamily === "small"
-      ? lerp(0.82, 1.0, smoothStep(rpm, 1500, 2600))
-      : config.turboFamily === "medium"
-        ? lerp(0.62, 1.0, smoothStep(rpm, 1900, 3400))
-        : lerp(0.38, 1.0, smoothStep(rpm, 2800, 4800));
-
   const topEndBias = config.topEndFlowBias - 0.5;
-  const softDropStart = Math.max(tqPeak + 150, valveLimit - (1200 + topEndBias * 600));
-  const softDropPenaltyBase = config.induction === "na" ? 0.15 + (1 - config.camAggression) * 0.08 : config.turboFamily === "small" ? 0.28 : config.turboFamily === "medium" ? 0.20 : 0.12;
-  const softDropPenalty = Math.max(0.05, softDropPenaltyBase * (1 - topEndBias * 0.45) * (1 - config.boostTaperBias * 0.10));
-  const hardDropPenalty = Math.max(0.16, (config.induction === "na" ? 0.56 : 0.48) * (1 - topEndBias * 0.35));
-  const softDrop = 1 - smoothStep(rpm, softDropStart, valveLimit) * softDropPenalty;
-  const hardDrop = 1 - smoothStep(rpm, valveLimit, valveLimit + 1400) * hardDropPenalty;
-  const highRpmTorqueFactor = Math.max(0.18, softDrop * hardDrop);
-
-  const naLowEndAssist = config.induction === "na"
-    ? 1 + (0.03 + (dispL >= 4 ? 0.12 : dispL >= 3 ? 0.06 : 0) + getLayoutLowEndBonus(config.engineLayout) * 0.7 + (config.stroke > config.bore ? 0.04 : 0)) * (1 - smoothStep(rpm, 3600, 5500))
-    : 1;
-
-  let grossTorqueLbFt = airLbMin * torquePerAir * timingEff * afrEff * chargeTempPenalty * lowRpmFactor * highRpmTorqueFactor * naLowEndAssist;
-  if (config.induction === "turbo") grossTorqueLbFt *= clamp(0.96 + boostPsi / 40, 0.96, 1.18);
-  if (config.induction === "supercharger") grossTorqueLbFt *= clamp(0.94 + boostPsi / 34, 0.94, 1.16);
-
-  const netTorqueLbFt = Math.max(0, grossTorqueLbFt - estimateFrictionTorque(config, rpm, dispL, engine.cylinders));
-  const rawBrakeHp = Math.max(0, netTorqueLbFt * rpm / 5252 - driveLossHp);
-  const rawTorqueLbFt = rpm > 0 ? rawBrakeHp * 5252 / rpm : 0;
-
-  const torqueFloorLbFt = estimateBrakeTorqueFloor(config, rpm, throttle, dispL, boostPsi);
-  const floorPeakRpm = config.induction === "na"
-    ? clamp(2800 + config.camAggression * 700 + (dispL >= 4 ? -250 : 0) + (config.stroke > config.bore ? -180 : 0), 1800, 5000)
-    : config.induction === "turbo"
-      ? (() => {
-          const fam = turboFamilies[config.turboFamily];
-          const spoolStart = Math.max(1200, fam.spoolStart + config.boostOnsetBias);
-          const spoolFull = Math.max(spoolStart + 400, fam.spoolFull + config.boostOnsetBias);
-          return clamp(spoolFull + (config.turboFamily === "small" ? 180 : config.turboFamily === "medium" ? 260 : 360) + config.boostTaperBias * 180, 2200, Math.min(config.redline - 900, 5600));
-        })()
-      : clamp(3000 + (config.blowerType === "centrifugal" ? 650 : 0), 2000, 5200);
-  const torqueFloorBlend = config.induction === "turbo"
-    ? (1 - smoothStep(rpm, floorPeakRpm + 250, floorPeakRpm + 1550))
-    : (1 - smoothStep(rpm, floorPeakRpm + 100, floorPeakRpm + 1700));
-  const supportTarget = rawTorqueLbFt * (1 - torqueFloorBlend) + torqueFloorLbFt * torqueFloorBlend;
-  const softness = config.induction === "na" ? 10 : 12;
-  const finalTorqueLbFt = 0.5 * (rawTorqueLbFt + supportTarget + Math.sqrt((rawTorqueLbFt - supportTarget) ** 2 + softness ** 2));
-  const brakeHp = rpm > 0 ? finalTorqueLbFt * rpm / 5252 : 0;
-  const bmepPsi = dispL > 0 ? (150.8 * finalTorqueLbFt) / (dispL * 61.0237) : 0;
-  const bsfc = config.induction === "na" ? 0.50 : 0.56;
-  const injectorCc = injectorCcMinForPower(brakeHp, bsfc, engine.cylinders, 0.85);
+  const flowFalloff = 1 - smoothStep(rpm, valveLimit, valveLimit + 1800) * (0.45 - topEndBias * 0.12);
+  const ve = estimateVE(config, rpm, mapKpa, dispL) * flowFalloff;
+  const cyclesPerSec = rpm / 120; // four-stroke: one intake cycle per two revolutions
+  const intakeVolumeM3S = dispM3 * cyclesPerSec * ve;
+  const airMassKgS = intakeVolumeM3S * (mapKpa * 1000) / (R_AIR * chargeTempK) * atm.dryAirFraction;
+  const airLbMin = airMassKgS * KG_S_TO_LB_MIN;
+  const load = clamp(mapKpa / (atm.pressurePa / 1000), 0, 1);
+  const fuel = fuelProperties(config.fuelType);
+  const targetAfr = fuelTargetAfr(config.induction, load, config.fuelType);
+  // Runtime AFR uses the familiar gasoline scale; lambda transfers across fuel blends.
+  const lambda = Math.max(0.35, runtime.afr / 14.7);
+  const actualAfr = lambda * fuel.stoich;
+  const fuelMassKgS = airMassKgS / actualAfr;
+  const combustibleFuelKgS = Math.min(fuelMassKgS, airMassKgS / fuel.stoich);
+  const timingEff = ignitionEfficiency(runtime.ignitionDeg + hw.timingBonus, mbtTimingAdvance(rpm, mapKpa));
+  const afrEff = mixtureEfficiency(lambda, targetAfr / fuel.stoich);
+  const chargeTempPenalty = clamp(1 - Math.max(0, chargeTempK - 323) * (0.0013 - hw.chargeTempRelief * 0.0005), 0.75, 1.0);
+  // Semi-empirical indicated efficiency: compression changes cycle efficiency,
+  // while airflow/VE supplies the speed and hardware effects. No torque floor.
+  const cycleEfficiency = (1 - Math.pow(config.compressionRatio, -0.30)) / (1 - Math.pow(10, -0.30));
+  const indicatedEfficiency = clamp(0.34 * cycleEfficiency, 0.26, 0.42) * timingEff * afrEff * chargeTempPenalty;
+  const indicatedWatts = combustibleFuelKgS * fuel.lowerHeatingValue * indicatedEfficiency;
+  const indicatedHp = indicatedWatts / WATTS_PER_HP;
+  const frictionTorqueLbFt = estimateFrictionTorque(config, rpm, dispL, engine.cylinders);
+  const pumpingTorqueLbFt = Math.max(0, atm.pressurePa - mapKpa * 1000) * dispM3 / (4 * Math.PI * NM_PER_LBFT);
+  // Compressor drive power comes from air mass and enthalpy rise, not boost alone.
+  if (config.induction === 'supercharger') {
+    driveLossHp = airMassKgS * 1005 * Math.max(0, preIcTempK - atm.tempK) / (0.9 * WATTS_PER_HP);
+  }
+  const finalTorqueLbFt = torqueFromPowerHp(indicatedHp - driveLossHp, rpm) - frictionTorqueLbFt - pumpingTorqueLbFt;
+  const brakeHp = powerHpFromTorque(finalTorqueLbFt, rpm);
+  const bmepPsi = bmepPsiFromTorque(finalTorqueLbFt, dispL);
+  const injectorCc = injectorCcFromFuel(fuelMassKgS, fuel.densityKgL, engine.cylinders);
+  const fuelFlowKgHr = fuelMassKgS * 3600;
+  const brakeThermalEfficiency = Math.max(0, brakeHp * WATTS_PER_HP) / Math.max(1, fuelMassKgS * fuel.lowerHeatingValue);
   const densityRatio = (mapKpa * 1000 / chargeTempK) / (atm.pressurePa / atm.tempK);
-  const cfm = airLbMin * 13.5;
+  const cfm = airMassKgS / 1.225 * 60 / 0.028316846592; // standard dry-air volume
   const eventHz = (rpm / 60) * engine.firingFactor;
+  boostPsi = Math.max(0, (mapKpa * 1000 - atm.pressurePa) / PA_PER_PSI);
 
   return {
+    indicatedHp, frictionTorqueLbFt, pumpingTorqueLbFt, driveLossHp, fuelFlowKgHr, brakeThermalEfficiency, lambda, actualAfr, ignitionDeg: runtime.ignitionDeg,
     rpm,
     dispL,
     mapKpa,
@@ -1160,115 +1009,31 @@ function solvePoint(config: SimConfig, runtime: RuntimeState): SolvePoint {
   };
 }
 
-function isotonicFit(values: number[], increasing = true) {
-  const source = increasing ? [...values] : [...values].map((v) => -v);
-  const blocks = source.map((v) => ({ sum: v, count: 1 }));
-
-  for (let i = 0; i < blocks.length - 1;) {
-    const a = blocks[i].sum / blocks[i].count;
-    const b = blocks[i + 1].sum / blocks[i + 1].count;
-    if (a <= b) {
-      i += 1;
-      continue;
-    }
-    blocks[i] = { sum: blocks[i].sum + blocks[i + 1].sum, count: blocks[i].count + blocks[i + 1].count };
-    blocks.splice(i + 1, 1);
-    if (i > 0) i -= 1;
-  }
-
-  const fitted: number[] = [];
-  for (const block of blocks) {
-    const value = block.sum / block.count;
-    for (let i = 0; i < block.count; i += 1) fitted.push(increasing ? value : -value);
-  }
-  return fitted;
-}
-
-function smoothSeries(values: number[]) {
-  return values.map((value, i) => {
-    const a = values[Math.max(0, i - 2)];
-    const b = values[Math.max(0, i - 1)];
-    const c = value;
-    const d = values[Math.min(values.length - 1, i + 1)];
-    const e = values[Math.min(values.length - 1, i + 2)];
-    return a * 0.08 + b * 0.22 + c * 0.40 + d * 0.22 + e * 0.08;
-  });
-}
-
-function projectUnimodal(values: number[]) {
-  const n = values.length;
-  const rawPeak = values.reduce((best, v, i) => (v > values[best] ? i : best), 0);
-  let bestFit = [...values];
-  let bestError = Number.POSITIVE_INFINITY;
-
-  for (let peak = 2; peak < n - 2; peak += 1) {
-    const rising = isotonicFit(values.slice(0, peak + 1), true);
-    const falling = isotonicFit(values.slice(peak), false);
-    const fit = [...rising.slice(0, -1), ...falling];
-    let error = Math.abs(peak - rawPeak) * 8;
-    for (let i = 0; i < n; i += 1) {
-      const diff = fit[i] - values[i];
-      error += diff * diff;
-    }
-    if (error < bestError) {
-      bestError = error;
-      bestFit = fit;
-    }
-  }
-
-  return bestFit;
-}
-
-function argMaxIndex(values: number[]) {
-  return values.reduce((best, v, i) => (v > values[best] ? i : best), 0);
-}
-
-function shapeTurboTorqueFromBoost(rows: SweepRow[], torqueValues: number[], boostValues: number[]) {
-  const peakBoostIndex = argMaxIndex(boostValues);
-  const peakTorqueIndex = argMaxIndex(torqueValues);
-  const riseEndIndex = Math.max(peakBoostIndex, Math.min(rows.length - 3, peakTorqueIndex));
-  const maxBoost = Math.max(...boostValues, 0.1);
-  const startTorque = torqueValues[0];
-  const targetPeakTorque = Math.max(...torqueValues.slice(Math.max(0, riseEndIndex - 2), Math.min(rows.length, riseEndIndex + 3)));
-  const shaped = [...torqueValues];
-
-  for (let i = 1; i <= riseEndIndex; i += 1) {
-    const rpmNorm = smoothStep(rows[i].rpm, rows[0].rpm + 250, rows[riseEndIndex].rpm);
-    const boostNorm = clamp(boostValues[i] / maxBoost, 0, 1);
-    const supportShape = clamp(0.28 * rpmNorm + 0.72 * Math.pow(boostNorm, 0.82), 0, 1);
-    const desiredTorque = lerp(startTorque, targetPeakTorque, supportShape);
-    shaped[i] = Math.max(shaped[i], desiredTorque);
-
-    const boostStillBuilding = boostValues[i] >= boostValues[i - 1] - 0.15;
-    if (boostStillBuilding && shaped[i] < shaped[i - 1] - 1.5) {
-      shaped[i] = shaped[i - 1] - 1.5;
-    }
-  }
-
-  return smoothSeries(shaped);
+function solveDynoPoint(config: SimConfig, rpm: number): SolvePoint {
+  const probe = solvePoint(config, {rpm, throttle:1, afr:12.9, ignitionDeg:24});
+  const fuel = fuelProperties(config.fuelType);
+  const hw = getHardwareState(config,rpm);
+  return solvePoint(config, {rpm, throttle:1, afr:probe.targetAfr / fuel.stoich * 14.7,
+    ignitionDeg:mbtTimingAdvance(rpm,probe.mapKpa)-hw.timingBonus});
 }
 
 function buildDynoSweep(config: SimConfig) {
   const rows: SweepRow[] = [];
-  for (let rpm = Math.max(1200, resolveIdleRpm(config)); rpm <= config.redline; rpm += 100) {
-    rows.push(solvePoint(config, { rpm, throttle: 1, afr: config.induction === "na" ? 12.9 : 11.8, ignitionDeg: 24 }));
-  }
+  const start = Math.max(1200, resolveIdleRpm(config));
+  for (let rpm = start; rpm < config.redline; rpm += 100) rows.push(solveDynoPoint(config,rpm));
+  rows.push(solveDynoPoint(config,config.redline));
+  return rows;
+}
 
-  let torqueInput = smoothSeries(rows.map((row) => row.torqueLbFt));
-  const boostInput = smoothSeries(rows.map((row) => row.boostPsi));
-
-  if (config.induction === "turbo") {
-    torqueInput = shapeTurboTorqueFromBoost(rows, torqueInput, boostInput);
-  }
-
-  const torqueShaped = projectUnimodal(torqueInput);
-
-  return rows.map((row, i) => ({
-    ...row,
-    torqueLbFt: torqueShaped[i],
-    boostPsi: boostInput[i],
-    brakeHp: torqueShaped[i] * row.rpm / 5252,
-  }));
+function stepRuntime(config: SimConfig, runtime: RuntimeState, targetThrottle: number, dt: number): RuntimeState {
+  const throttle = throttleAfterStep(runtime.throttle,targetThrottle,dt);
+  const point = solvePoint(config,{...runtime,throttle});
+  const brakeTorque = config.dynoBrakeLoad + runtime.rpm * 0.00145;
+  const inertiaKgM2 = 0.18 + point.dispL * 0.07 + config.dynoRollerInertia * 0.018;
+  const netTorque = point.torqueLbFt-brakeTorque;
+  const rpm = runtime.rpm + angularAccelerationRpmS(netTorque,inertiaKgM2)*dt;
+  // Idle regulation and rev limiting are explicit boundary models.
+  return {...runtime, throttle, rpm:clamp(rpm,resolveIdleRpm(config),config.redline-25)};
 }
 
 function MetricCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -1290,7 +1055,7 @@ function LabeledSlider({ label, value, onChange, min, max, step = 1, display }: 
         <span>{label}</span>
         <span className="text-slate-400">{display}</span>
       </div>
-      <Slider value={[value]} min={min} max={max} step={step} onValueChange={(vals) => onChange(vals[0] ?? value)} />
+      <Slider aria-label={label} value={[value]} min={min} max={max} step={step} onValueChange={(vals) => onChange(vals[0] ?? value)} />
     </div>
   );
 }
@@ -1396,37 +1161,6 @@ function getFiringModeOptions(layout: EngineLayout) {
   }
 }
 
-function interpolateSweepAtRpm(rows: SweepRow[], rpm: number) {
-  if (!rows.length) return null;
-  if (rpm <= rows[0].rpm) return rows[0];
-  if (rpm >= rows[rows.length - 1].rpm) return rows[rows.length - 1];
-  for (let i = 1; i < rows.length; i += 1) {
-    const a = rows[i - 1];
-    const b = rows[i];
-    if (rpm >= a.rpm && rpm <= b.rpm) {
-      const t = (rpm - a.rpm) / Math.max(1, b.rpm - a.rpm);
-      return {
-        ...a,
-        rpm,
-        brakeHp: lerp(a.brakeHp, b.brakeHp, t),
-        torqueLbFt: lerp(a.torqueLbFt, b.torqueLbFt, t),
-        boostPsi: lerp(a.boostPsi, b.boostPsi, t),
-        bmepPsi: lerp(a.bmepPsi, b.bmepPsi, t),
-        targetAfr: lerp(a.targetAfr, b.targetAfr, t),
-        pr: lerp(a.pr, b.pr, t),
-        eventHz: lerp(a.eventHz, b.eventHz, t),
-      } as SweepRow;
-    }
-  }
-  return rows[rows.length - 1];
-}
-
-function rpmWeightedBlend(distance: number, radius: number) {
-  const x = clamp(1 - distance / Math.max(radius, 1), 0, 1);
-  return x * x * (3 - 2 * x);
-}
-
-
 function runRuntimeSelfChecks() {
   const basicChecks = [
     clamp(5, 0, 4) === 4,
@@ -1457,15 +1191,20 @@ export default function EngineSimulatorV2() {
   const [savePresetName, setSavePresetName] = useState("");
   const [savedPresets, setSavedPresets] = useState<EnginePreset[]>([]);
   const lastLiveTraceSampleRef = useRef(0);
+  const liveSimulationTimeRef = useRef(0);
 
   const sweep = useMemo(() => buildDynoSweep(config), [config]);
   const maxLeftAxis = useMemo(() => Math.ceil((Math.max(...sweep.map((r) => Math.max(r.brakeHp, r.torqueLbFt))) * 1.08) / 25) * 25, [sweep]);
+  const minLeftAxis = Math.min(0,...liveTrace.map(row=>Math.min(row.brakeHp,row.torqueLbFt)));
   const maxRightAxis = useMemo(() => Math.ceil((Math.max(...sweep.map((r) => r.boostPsi), 1) * 1.08) / 2) * 2, [sweep]);
   const livePoint = useMemo(() => solvePoint(config, runtime), [config, runtime]);
-  const sweepPoint = useMemo(() => solvePoint(config, { rpm: sweepCursor, throttle: 1, afr: config.induction === "na" ? 12.9 : 11.8, ignitionDeg: 24 }), [config, sweepCursor]);
-  const displayedPoint = useMemo(() => (graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint), [graphMode, sweepRunning, sweepPoint, livePoint]);
+  const sweepPoint = useMemo(() => solveDynoPoint(config, sweepCursor), [config, sweepCursor]);
+  const displayedPoint = useMemo(() => (graphMode === "dyno" ? sweepPoint : livePoint), [graphMode, sweepPoint, livePoint]);
+  const displayedMetrics = { ...displayedPoint, vePct: displayedPoint.ve*100, compressorEffPct: displayedPoint.compressorEff*100 };
   const peakHp = useMemo(() => sweep.reduce((a, b) => (b.brakeHp > a.brakeHp ? b : a), sweep[0]), [sweep]);
   const peakTq = useMemo(() => sweep.reduce((a, b) => (b.torqueLbFt > a.torqueLbFt ? b : a), sweep[0]), [sweep]);
+  const peakAirflow = useMemo(()=>sweep.reduce((a,b)=>a.airLbMin>b.airLbMin?a:b,sweep[0]),[sweep]);
+  const peakInjector = useMemo(()=>sweep.reduce((a,b)=>a.injectorCc>b.injectorCc?a:b,sweep[0]),[sweep]);
   const peakBoost = useMemo(() => sweep.reduce((a, b) => (b.boostPsi > a.boostPsi ? b : a), sweep[0]), [sweep]);
   const presetFilter = useMemo(() => presetSearch.trim().toLowerCase(), [presetSearch]);
   const allPresets = useMemo(() => [...presets, ...savedPresets], [savedPresets]);
@@ -1516,57 +1255,56 @@ export default function EngineSimulatorV2() {
   }, [diagLeftMetric, diagRightMetric]);
 
   useEffect(() => {
-    if (!running || graphMode !== "live") return;
+    if (!running || graphMode !== 'live') return;
+    let last = performance.now();
+    let accumulator = 0;
     const id = window.setInterval(() => {
-      setRuntime((prev) => {
-        const nextThrottle = prev.throttle + (liveThrottleTarget - prev.throttle) * 0.14;
-        const nextState = { ...prev, throttle: nextThrottle };
-        const point = solvePoint(config, nextState);
-        const currentThrottle = clamp(nextState.throttle, 0, 1);
-        const loadedBrake = config.dynoBrakeLoad * (0.34 + 0.48 * currentThrottle) + prev.rpm * 0.00145;
-        const loadedTorque = Math.max(0, point.torqueLbFt - loadedBrake);
-        const inertia = 1.0 + point.dispL * 0.32 + config.dynoRollerInertia * 0.022;
-        const accelPerSec = clamp((loadedTorque / inertia) * 6.2 + currentThrottle * 140, 0, 620);
-        const decelPerSec = 260 + (1 - currentThrottle) * 190;
-        let nextRpm = prev.rpm + accelPerSec / 60 - (currentThrottle < 0.08 ? decelPerSec / 60 : 0);
-        if (nextRpm > config.redline - 90) nextRpm -= 360 / 60;
-        nextRpm = clamp(nextRpm, resolveIdleRpm(config), config.redline - 25);
-        return { ...nextState, rpm: nextRpm };
-      });
-    }, 1000 / 60);
-    return () => window.clearInterval(id);
-  }, [config, running, graphMode, liveThrottleTarget]);
-
-  useEffect(() => {
-    if (graphMode !== "live") return;
-    const now = performance.now();
-    if (now - lastLiveTraceSampleRef.current < 33) return;
-    lastLiveTraceSampleRef.current = now;
-    setLiveTrace((prev) => {
-      const nextTime = prev.length ? (prev[prev.length - 1].time ?? 0) + 1 / 60 : 0;
-      const next: SweepRow[] = [...prev, { ...livePoint, time: Number(nextTime.toFixed(2)) }];
-      return next.slice(-320);
-    });
-  }, [livePoint, graphMode]);
-
-  useEffect(() => {
-    if (!sweepRunning) return;
-    const id = window.setInterval(() => {
-      setSweepCursor((prev) => {
-        const next = Math.min(config.redline, prev + 7);
-        if (next >= config.redline) setSweepRunning(false);
+      const now = performance.now();
+      // Freeze rather than fast-forward a backgrounded tab. Integrate at 120 Hz.
+      accumulator += Math.min(0.1,Math.max(0,(now-last)/1000));
+      last=now;
+      const steps=Math.floor((accumulator+1e-10)/(1/120));
+      if (!steps) return;
+      accumulator-=steps/120;
+      liveSimulationTimeRef.current += steps/120;
+      setRuntime(prev=>{
+        let next=prev;
+        for(let i=0;i<steps;i++) next=stepRuntime(config,next,liveThrottleTarget,1/120);
         return next;
       });
-    }, 1000 / 60);
-    return () => window.clearInterval(id);
-  }, [sweepRunning, config.redline]);
+    },1000/60);
+    return ()=>window.clearInterval(id);
+  },[config,running,graphMode,liveThrottleTarget]);
+
+  useEffect(() => {
+    if (graphMode!=='live' || !running) return;
+    const elapsed=liveSimulationTimeRef.current;
+    if (elapsed-lastLiveTraceSampleRef.current < 1/30) return;
+    lastLiveTraceSampleRef.current=elapsed;
+    setLiveTrace(prev=>[...prev,{...livePoint,time:elapsed}].slice(-320));
+  },[livePoint,graphMode,running]);
+
+  useEffect(() => {
+    if(!sweepRunning) return;
+    let last=performance.now();
+    const id=window.setInterval(()=>{
+      const now=performance.now();
+      const dt=Math.min(0.1,Math.max(0,(now-last)/1000));last=now;
+      setSweepCursor(prev=>{
+        const next=Math.min(config.redline,prev+420*dt);
+        if(next>=config.redline) setSweepRunning(false);
+        return next;
+      });
+    },1000/60);
+    return ()=>window.clearInterval(id);
+  },[sweepRunning,config.redline]);
 
   const graphData = useMemo(() => {
     if (graphMode === "live") return liveTrace;
     if (!sweepRunning) return sweep;
     const partial = sweep.filter((row) => row.rpm <= sweepCursor);
-    return partial.length ? partial : [sweep[0]];
-  }, [graphMode, liveTrace, sweep, sweepRunning, sweepCursor]);
+    return [...partial.filter(row=>row.rpm<sweepCursor),sweepPoint];
+  }, [graphMode, liveTrace, sweep, sweepRunning, sweepCursor, sweepPoint]);
 
   const chartData = useMemo(() => graphData.map((row) => ({
     ...row,
@@ -1593,7 +1331,7 @@ export default function EngineSimulatorV2() {
     setConfig(nextConfig);
     setRuntime({ ...defaultRuntime, rpm: resolveIdleRpm(nextConfig), throttle: 0 });
     setLiveThrottleTarget(0);
-    lastLiveTraceSampleRef.current = 0;
+    lastLiveTraceSampleRef.current = 0; liveSimulationTimeRef.current = 0;
     setGraphMode("dyno");
     setSweepRunning(false);
     setGraphPage("power");
@@ -1617,9 +1355,12 @@ export default function EngineSimulatorV2() {
   const updateRuntime = <K extends keyof RuntimeState>(key: K, value: RuntimeState[K]) => {
     if (key === "throttle") {
       setGraphMode("live");
+      setSweepRunning(false);
       setLiveThrottleTarget(Number(value));
       return;
     }
+    setGraphMode("live");
+    setSweepRunning(false);
     setRuntime((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -1701,7 +1442,7 @@ export default function EngineSimulatorV2() {
             <CardHeader className="shrink-0 border-b border-slate-700/60 !pb-4">
               <div className="text-[10px] uppercase tracking-[0.25em] text-sky-400">Apex · Engine laboratory</div>
               <CardTitle className={UI.title}>{config.gameMeta?.name ?? 'Custom engine'}</CardTitle>
-              <div className="text-xs text-slate-400">{sweepRunning ? 'Full-load dyno sweep in progress' : 'Choose an engine, tune it, then run a sweep.'}</div>
+              <div className="text-xs text-slate-400">{sweepRunning ? 'Full-load reference sweep · optimal mixture / estimated MBT' : 'Choose an engine, tune it, then run a sweep.'}</div>
               <div className="grid grid-cols-[1fr_auto] gap-2 pt-2">
                 <Button className={`${UI.buttonPrimary} !h-12`} onClick={() => sweepRunning ? setSweepRunning(false) : void runSweep()}>
                   <Gauge className="h-4 w-4" /> {sweepRunning ? 'Stop dyno' : 'Run dyno'}
@@ -1784,6 +1525,9 @@ export default function EngineSimulatorV2() {
               {tab === "live" && (
                 <div className="grid gap-4">
                   <p className="text-xs text-slate-400">Move the throttle to free-rev, or use Run dyno above for a full-load sweep.</p>
+                  <div className="text-xs text-slate-400">Live mode uses your mixture and ignition settings. Dyno uses fuel-specific target mixture and estimated best-torque timing.</div>
+                  <LabeledSlider label="Mixture (gasoline-scale AFR)" value={runtime.afr} onChange={v=>updateRuntime("afr",v)} min={8} max={20} step={0.1} display={`${fmt(runtime.afr,1)} · λ ${fmt(runtime.afr/14.7,2)}`} />
+                  <LabeledSlider label="Ignition advance" value={runtime.ignitionDeg} onChange={v=>updateRuntime("ignitionDeg",v)} min={0} max={45} step={1} display={`${fmt(runtime.ignitionDeg)}° BTDC`} />
                   <LabeledSlider label="Throttle" value={runtime.throttle * 100} onChange={(v) => updateRuntime("throttle", v / 100)} min={0} max={100} display={`${fmt(runtime.throttle * 100, 0)} %`} />
                   <div className="grid grid-cols-2 gap-3">
                     <Button className={UI.buttonPrimary} onClick={() => setRunning((v) => !v)}>
@@ -1797,7 +1541,7 @@ export default function EngineSimulatorV2() {
                         const nextMode = currentMode === "live" ? "dyno" : "live";
                         if (nextMode === "live") {
                           setSweepRunning(false);
-                          lastLiveTraceSampleRef.current = 0;
+                          lastLiveTraceSampleRef.current = 0; liveSimulationTimeRef.current = 0;
                           setLiveTrace([]);
                           setRuntime((prev) => ({ ...prev, rpm: clamp(prev.rpm, resolveIdleRpm(config), config.redline - 25) }));
                         } else {
@@ -1809,7 +1553,7 @@ export default function EngineSimulatorV2() {
                     }}>
                       <Activity className="mr-2 h-4 w-4" /> Graph: {graphMode === "live" ? "Live trace" : "Dyno curve"}
                     </Button>
-                    <Button className={UI.buttonOutline} variant="outline" onClick={() => { lastLiveTraceSampleRef.current = 0; setRuntime({ ...defaultRuntime, rpm: resolveIdleRpm(config) }); setLiveThrottleTarget(defaultRuntime.throttle); setLiveTrace([]); setSweepCursor(1200); setSweepRunning(false); }}>
+                    <Button className={UI.buttonOutline} variant="outline" onClick={() => { lastLiveTraceSampleRef.current = 0; liveSimulationTimeRef.current = 0; setRuntime({ ...defaultRuntime, rpm: resolveIdleRpm(config) }); setLiveThrottleTarget(defaultRuntime.throttle); setLiveTrace([]); setSweepCursor(1200); setSweepRunning(false); }}>
                       <RotateCcw className="mr-2 h-4 w-4" /> Reset
                     </Button>
                   </div>
@@ -2128,8 +1872,9 @@ export default function EngineSimulatorV2() {
                   <LabeledSlider label="Altitude" value={config.altitude} onChange={(v) => updateConfig("altitude", v)} min={0} max={3500} step={10} display={`${fmt(config.altitude, 0)} m`} />
                   <LabeledSlider label="Humidity" value={config.humidity * 100} onChange={(v) => updateConfig("humidity", v / 100)} min={0} max={100} display={`${fmt(config.humidity * 100, 0)} %`} />
                   <LabeledSlider label="Vehicle speed" value={config.vehicleSpeedKph} onChange={(v) => updateConfig("vehicleSpeedKph", v)} min={0} max={250} step={1} display={`${fmt(config.vehicleSpeedKph, 0)} km/h`} />
-                  <LabeledSlider label="Dyno roller inertia" value={config.dynoRollerInertia} onChange={(v) => updateConfig("dynoRollerInertia", v)} min={20} max={140} step={1} display={fmt(config.dynoRollerInertia, 0)} />
-                  <LabeledSlider label="Dyno brake load" value={config.dynoBrakeLoad} onChange={(v) => updateConfig("dynoBrakeLoad", v)} min={0} max={60} step={1} display={`${fmt(config.dynoBrakeLoad, 0)} lb-ft`} />
+                  <p className="text-xs text-slate-400">Inertia and brake load affect acceleration in Drive. Reference dyno curves are steady-state estimates, independent of sweep speed.</p>
+                  <LabeledSlider label="Dyno roller inertia" value={config.dynoRollerInertia} onChange={(v) => updateConfig("dynoRollerInertia", v)} min={20} max={140} step={1} display={`${fmt(config.dynoRollerInertia, 0)} · relative scale`} />
+                  <LabeledSlider label="Dyno brake load" value={config.dynoBrakeLoad} onChange={(v) => updateConfig("dynoBrakeLoad", v)} min={0} max={1000} step={1} display={`${fmt(config.dynoBrakeLoad, 0)} lb-ft`} />
                 </div>
               )}
 
@@ -2209,16 +1954,17 @@ export default function EngineSimulatorV2() {
                       <CartesianGrid stroke="#273449" strokeDasharray="3 3" />
                       <XAxis
                         dataKey={graphMode === "dyno" ? "rpm" : "time"}
+                        allowDataOverflow
                         type="number"
                         domain={graphMode === "dyno" ? [Math.max(1200, resolveIdleRpm(config)), config.redline] : [liveTimeStart, Math.max(5, lastLiveTime)]}
                         tick={{ fill: "#cbd5e1", fontSize: 12 }}
                         tickFormatter={(value) => graphMode === "dyno" ? `${Math.round(value)}` : `${Number(value).toFixed(1)}s`}
                       />
-                      <YAxis yAxisId="left" domain={graphPage === "power" ? [0, maxLeftAxis] : [0, diagLeftMax]} tick={{ fill: "#cbd5e1", fontSize: 12 }} />
+                      <YAxis yAxisId="left" domain={graphPage === "power" ? [graphMode === "live" ? Math.floor(minLeftAxis/25)*25 : 0, maxLeftAxis] : [0, diagLeftMax]} tick={{ fill: "#cbd5e1", fontSize: 12 }} />
                       <YAxis yAxisId="right" orientation="right" domain={graphPage === "power" ? [0, maxRightAxis] : [0, diagRightMax]} tick={{ fill: "#cbd5e1", fontSize: 12 }} />
                       <Tooltip content={<CustomTooltip graphPage={graphPage} />} />
                       <Legend wrapperStyle={{ color: "#e2e8f0" }} />
-                      {graphMode === "dyno" && sweepRunning ? <ReferenceLine x={sweepCursor} stroke="#cbd5e1" strokeDasharray="6 6" /> : null}
+                      {graphMode === "dyno" ? <ReferenceLine x={sweepCursor} stroke="#cbd5e1" strokeDasharray="6 6" /> : null}
                       {graphPage === "power" ? (
                         <>
                           <Line yAxisId="left" type="monotone" dataKey="brakeHp" name="HP" stroke="#3b82f6" strokeWidth={3} dot={false} isAnimationActive={false} />
@@ -2236,10 +1982,10 @@ export default function EngineSimulatorV2() {
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-4">
-                  <MetricCard label="RPM" value={`${fmt(displayedPoint.rpm)} rpm`} sub={graphMode === "dyno" && sweepRunning ? "Dyno sweep" : "Loaded run"} />
+                  <MetricCard label="RPM" value={`${fmt(displayedPoint.rpm)} rpm`} sub={graphMode === "dyno" ? (sweepRunning ? "Dyno sweep" : "Reference point") : "Loaded run"} />
                   <MetricCard label="Boost" value={`${fmt(displayedPoint.boostPsi, 1)} psi`} sub={`PR ${fmt(displayedPoint.pr, 2)}`} />
-                  <MetricCard label="Torque" value={`${fmt(displayedPoint.torqueLbFt)} lb-ft`} sub={`BMEP ${fmt(displayedPoint.bmepPsi)} psi`} />
-                  <MetricCard label={graphPage === "power" ? "Charge temp" : diagnosticMetricMeta[diagLeftMetric].label} value={graphPage === "power" ? `${fmt(displayedPoint.chargeTempC, 1)} °C` : diagnosticMetricMeta[diagLeftMetric].formatter((chartData[chartData.length - 1] as any)?.[diagLeftMetric] ?? 0)} sub={graphPage === "power" ? `IC eff ${fmt(intercoolerEffectiveness(config.intercoolerType, config.icCoreSize, config.vehicleSpeedKph) * 100)}%` : `Right axis ${diagnosticMetricMeta[diagRightMetric].label}`} />
+                  <MetricCard label="Torque" value={`${fmt(displayedPoint.torqueLbFt)} lb-ft`} sub={`${fmt(displayedPoint.brakeHp)} hp · BMEP ${fmt(displayedPoint.bmepPsi)} psi`} />
+                  <MetricCard label={graphPage === "power" ? "Charge temp" : diagnosticMetricMeta[diagLeftMetric].label} value={graphPage === "power" ? `${fmt(displayedPoint.chargeTempC, 1)} °C` : diagnosticMetricMeta[diagLeftMetric].formatter(displayedMetrics[diagLeftMetric])} sub={graphPage === "power" ? `IC eff ${fmt(intercoolerEffectiveness(config.intercoolerType, config.icCoreSize, config.vehicleSpeedKph) * 100)}%` : `Right axis ${diagnosticMetricMeta[diagRightMetric].label}`} />
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-4">
@@ -2252,14 +1998,16 @@ export default function EngineSimulatorV2() {
             </Card>
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <MetricCard label="Peak airflow" value={`${fmt(peakHp.airLbMin, 1)} lb/min`} />
-              <MetricCard label="Peak injector" value={`${fmt(peakHp.injectorCc)} cc/min`} />
-              <MetricCard label="Peak VE" value={`${fmt(peakHp.ve * 100)} %`} />
+              <MetricCard label="Peak airflow" value={`${fmt(peakAirflow.airLbMin, 1)} lb/min`} />
+              <MetricCard label="Peak injector" value={`${fmt(peakInjector.injectorCc)} cc/min`} />
+              <MetricCard label="VE @ peak power" value={`${fmt(peakHp.ve * 100)} %`} />
               <MetricCard label="Compressor eff" value={`${fmt(peakHp.compressorEff * 100, 1)} %`} />
               <MetricCard label="Charge temp @ peak" value={`${fmt(peakHp.chargeTempC, 1)} °C`} />
-              <MetricCard label="Peak density ratio" value={fmt(peakHp.densityRatio, 2)} />
-              <MetricCard label="Peak MAP" value={`${fmt(peakHp.mapKpa, 0)} kPa`} />
+              <MetricCard label="Density @ peak power" value={fmt(peakHp.densityRatio, 2)} />
+              <MetricCard label="MAP @ peak power" value={`${fmt(peakHp.mapKpa, 0)} kPa`} />
               <MetricCard label="Target AFR @ peak" value={fmt(peakHp.targetAfr, 1)} />
+              <MetricCard label="Fuel flow @ peak" value={`${fmt(peakHp.fuelFlowKgHr,1)} kg/h`} />
+              <MetricCard label="Brake efficiency @ peak" value={`${fmt(peakHp.brakeThermalEfficiency*100,1)} %`} />
             </div>
           </div>
         </div>
