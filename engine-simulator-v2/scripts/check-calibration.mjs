@@ -7,6 +7,29 @@ const m=await import(out);let count=0;
 for(const profile of m.engineCalibrations){
  const c={...m.configForPreset(m.presets.find(p=>p.name===profile.preset)),ambientTemp:20,altitude:0,humidity:.45};
  for(const p of profile.points){const row=m.solveDynoPoint(c,p.rpm);const error=Math.abs(row.torqueLbFt*1.3558179483314004/p.torqueNm-1)*100;assert.ok(error<(p.validationOnly?4:.001),`${profile.id} ${p.rpm}: ${error}%`);console.log(profile.id,p.rpm,p.validationOnly?'holdout':'fit',error.toFixed(3)+'%');count++;}
+ // Dense independent RPM sampling catches overshoot BETWEEN fitted grid points.
+ const rows=[];for(let rpm=1200;rpm<=c.redline;rpm+=7)rows.push(m.solveDynoPoint(c,rpm));
+ for(const p of profile.points)rows.push(m.solveDynoPoint(c,p.rpm));
+ const tqRating=profile.points.find(p=>p.basis==='torque-rating');
+ const hpRating=profile.points.find(p=>p.basis==='power-rating');
+ const hpReference=hpRating.torqueNm*hpRating.rpm*2*Math.PI/60/745.6998715822702;
+ const hpPeak=rows.reduce((a,b)=>a.brakeHp>b.brakeHp?a:b);
+ const tqPeak=rows.reduce((a,b)=>a.torqueLbFt>b.torqueLbFt?a:b);
+ const hpError=Math.abs(hpPeak.brakeHp/hpReference-1),tqError=Math.abs(tqPeak.torqueLbFt*1.3558179483314004/tqRating.torqueNm-1);
+ assert.ok(hpError<.05&&tqError<.05,profile.id+' peak magnitudes');
+ assert.ok(Math.abs(hpPeak.rpm-hpRating.rpm)<=200,profile.id+' power peak RPM');
+ assert.ok(Math.abs(tqPeak.rpm-tqRating.rpm)<=200,profile.id+' torque peak RPM');
+ for(const row of rows){
+  const loss=(row.frictionTorqueLbFt+row.pumpingTorqueLbFt)*row.rpm/5252.11312203255+row.driveLossHp;
+  assert.ok(Math.abs(row.indicatedHp-loss-row.brakeHp)<1e-7,'calibrated energy balance');
+  const next=m.solveDynoPoint(c,Math.min(c.redline,row.rpm+1));
+  assert.ok(Math.abs(next.torqueLbFt-row.torqueLbFt)<1,'no charge-curve discontinuity');
+ }
+ console.log(`${profile.id} peak power error ${(hpError*100).toFixed(3)}%, torque ${(tqError*100).toFixed(3)}%; RPM ${hpPeak.rpm}/${tqPeak.rpm}`);
+ if(c.induction==='turbo'){
+  const tuned={...c,wastegateBasePsi:c.wastegateBasePsi+5};
+  assert.ok(m.solveDynoPoint(tuned,hpRating.rpm).brakeHp>hpReference*1.05,'tuned engine not clamped to stock power');
+ }
  const rpm=profile.points[0].rpm,base=m.solveDynoPoint(c,rpm);
  assert.ok(m.solveDynoPoint({...c,ambientTemp:45},rpm).brakeHp<base.brakeHp);
  assert.ok(Math.abs(m.solveDynoPoint({...c,camAggression:c.camAggression+.1},rpm).brakeHp-base.brakeHp)>.01,'hardware response');
