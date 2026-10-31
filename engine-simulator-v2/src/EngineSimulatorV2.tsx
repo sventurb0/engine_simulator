@@ -2,6 +2,7 @@ import { engineCalibrations, calibrationById, calibrationForPreset, calibrationF
 import { compressorMaps, mapEfficiency, correctedFlow, type CompressorMapKey } from "./data/compressorMaps";
 import { WATTS_PER_HP, NM_PER_LBFT, PA_PER_PSI, KG_S_TO_LB_MIN, powerHpFromTorque, torqueFromPowerHp, bmepPsiFromTorque, fuelProperties, mixtureEfficiency, ignitionEfficiency, injectorCcFromFuel, angularAccelerationRpmS, throttleAfterStep } from "./lib/powertrainMath";
 import { expandFactoryPresets, manufacturerReferences } from "./data/factoryEngines";
+import { acousticProfileFor } from "./lib/engineAcousticProcessor.js";
 import { useEngineAudio, createProceduralSampleBuffer } from "./lib/engineAudio.js";
 import { clamp, lerp, smoothStep, engineLayouts } from "./lib/engineAudioPrimitives";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -42,6 +43,7 @@ type FiringSoundMode = "stock" | "even" | "crossplane_i4" | "bigbang_i4" | "cp3_
 type ApplicationType = "car";
 
 export type SimConfig = {
+  audioModel?: "legacy" | "acoustic";
   calibrationId?: string;
   calibrationEnabled?: boolean;
   compressorMap?: CompressorMapKey;
@@ -544,6 +546,7 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     ...defaultConfig,
     ...config,
     applicationType: "car",
+    audioModel: config.audioModel === "acoustic" ? "acoustic" : "legacy",
     compressorMap: coerceOption(config.compressorMap, ["generic","g25-550","gtx3071r-gen2"] as const, "generic"),
     calibrationId: calibrationById(config.calibrationId)?.id,
     calibrationEnabled: config.calibrationEnabled !== false,
@@ -1260,7 +1263,7 @@ export default function EngineSimulatorV2() {
   const customPresets = useMemo(() => filteredPresets.filter((p) => p.group === "custom"), [filteredPresets]);
   const userPresets = useMemo(() => filteredPresets.filter((p) => p.group === "saved"), [filteredPresets]);
 
-  const { ensureAudio } = useEngineAudio(config, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
+  const { ensureAudio, acousticStatus } = useEngineAudio(config, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
 
   useEffect(() => {
     runRuntimeSelfChecks();
@@ -1932,6 +1935,17 @@ export default function EngineSimulatorV2() {
 
               {tab === "audio" && (
                 <div className="grid gap-4">
+                  <div className="rounded-xl border border-sky-500/30 p-3 text-sm">
+                    <label htmlFor="audio-model" className="block mb-2 text-slate-300">Sound model comparison</label>
+                    <select id="audio-model" aria-label="Sound model comparison" className={UI.select} value={config.audioModel??'legacy'} onChange={e=>updateConfig('audioModel',e.target.value as 'legacy'|'acoustic')}>
+                      <option value="legacy">Established engine voice</option>
+                      <option value="acoustic" disabled={!acousticProfileFor(config)}>Acoustic prototype · exhaust paths</option>
+                    </select>
+                    <p className="mt-2 text-xs text-slate-400">{acousticStatus==='ready'?'Acoustic prototype active · not recording-calibrated':acousticStatus==='loading'?'Loading acoustic model…':acousticStatus==='fallback'?'Acoustic model unavailable · established voice is playing':acousticStatus==='unsupported'?'This engine uses its established voice':'Established voice selected'}. Audio must be enabled to audition.</p>
+                    <div className="mt-3 flex flex-wrap gap-2">{[['B234R','Saab B234R'],['Chevrolet LS3 6.2','Chevrolet LS3'],['Honda F20C','Honda F20C']].map(([name,label])=><Button key={name} className={UI.buttonOutline} onClick={()=>{const preset=presets.find(p=>p.name===name);if(preset){applyPreset(preset);setConfig(current=>({...current,audioModel:'acoustic'}));}}}>Try {label}</Button>)}</div>
+                    <p className="mt-2 text-xs text-slate-400">Prototype geometry, exhaust resonances and room responses are modelled assumptions. They have not been matched to reference recordings. Lift off in Drive to hear inferred fuel-cut overrun; firing-mode overrides apply to the established voice.</p>
+                  </div>
+
                   <div className="grid gap-2">
                     <div className="text-sm text-slate-300">Firing order / pulse mode</div>
                     <Select value={config.firingSoundMode} onValueChange={(v: FiringSoundMode) => updateConfig("firingSoundMode", v)}>
@@ -1956,6 +1970,7 @@ export default function EngineSimulatorV2() {
                       </SelectContent>
                     </Select>
                   </div>
+                  <details className="text-xs text-slate-400"><summary className="cursor-pointer">Reference listening checklist</summary><p className="mt-2">Use the same headphones and microphone position for both models. Compare a warm engine at idle, steady 2000/4000 RPM, a loaded sweep and closed-throttle coast-down. Free revving is a separate reference from an on-load dyno pull. Match playback loudness before judging tone. No reference recordings are bundled or claimed as validation; a recording of your own B234R is the best first comparison.</p></details>
                   <LabeledSlider label="Engine loudness" value={config.engineLoudness * 100} onChange={(v) => updateConfig("engineLoudness", v / 100)} min={20} max={160} display={`${fmt(config.engineLoudness * 100, 0)} %`} />
                   <LabeledSlider label="Turbo loudness" value={config.turboLoudness * 100} onChange={(v) => updateConfig("turboLoudness", v / 100)} min={0} max={220} display={`${fmt(config.turboLoudness * 100, 0)} %`} />
                   <LabeledSlider label="Supercharger loudness" value={config.superchargerLoudness * 100} onChange={(v) => updateConfig("superchargerLoudness", v / 100)} min={0} max={180} display={`${fmt(config.superchargerLoudness * 100, 0)} %`} />

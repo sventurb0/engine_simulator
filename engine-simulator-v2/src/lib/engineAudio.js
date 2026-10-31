@@ -1,5 +1,8 @@
 // Ported from sventurb0/apex_syndicate engineAudio.js (blob 1afe193869d6a584bddfa2859d3b8960951f5b70).
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+
+import { acousticProfileFor } from "./engineAcousticProcessor";
+import { acousticRoomBuffer } from "./engineAcousticRoom";
 
 import { blowerVoice, releaseVoice, recoverFireTime } from "./engineAudioDynamics";
 
@@ -220,6 +223,7 @@ export function createProceduralSampleBuffer(ctx, key) {
 }
 
 export function useEngineAudio(config, point, enabled, throttle) {
+  const [acousticStatus, setAcousticStatus] = useState("legacy");
   const ctxRef = useRef(null);
   const nodesRef = useRef(null);
   const stateRef = useRef({ config, point, throttle });
@@ -474,6 +478,11 @@ export function useEngineAudio(config, point, enabled, throttle) {
     dryMix.connect(roomMix).connect(comp).connect(micHp).connect(micLp).connect(peakComp).connect(master).connect(outputGuard).connect(ctx.destination);
     dryMix.connect(roomSend).connect(roomDelay).connect(roomFeedback).connect(roomDelay);
     roomDelay.connect(roomReturn).connect(roomMix);
+    const acousticRoom = ctx.createConvolver();
+    acousticRoom.buffer = acousticRoomBuffer(ctx);
+    const acousticRoomSend = ctx.createGain();
+    acousticRoomSend.gain.value = 0;
+    dryMix.connect(acousticRoomSend).connect(acousticRoom).connect(roomMix);
 
     const exhaustBus = ctx.createGain();
     const intakeBus = ctx.createGain();
@@ -535,12 +544,44 @@ export function useEngineAudio(config, point, enabled, throttle) {
 
     const sampleBuffers = Object.fromEntries(PRIVATE_AUDIO_SAMPLE_KEYS.map((key) => [key, createProceduralSampleBuffer(ctx, key)]));
     ctxRef.current = ctx;
-    nodesRef.current = { ctx, blowerOsc, blowerGain, blowerHarmonic, blowerHarmonicGain, master, micHp, micLp, roomSend, roomReturn, exhaustRes, intakeRes, blockRes, turboHiss, intakeWind, mechBed, turboOsc, turboGain, combustionBuffer, oldV8CombustionBuffer, i4CombustionBuffers, noiseBuffer, fxBus, sampleBuffers };
+    nodesRef.current = { ctx, exhaustBus, intakeBus, blockBus, acousticRoom, acousticRoomSend, blowerOsc, blowerGain, blowerHarmonic, blowerHarmonicGain, master, micHp, micLp, roomSend, roomReturn, exhaustRes, intakeRes, blockRes, turboHiss, intakeWind, mechBed, turboOsc, turboGain, combustionBuffer, oldV8CombustionBuffer, i4CombustionBuffers, noiseBuffer, fxBus, sampleBuffers };
     nextFireTimeRef.current = ctx.currentTime + 0.04;
     patternIndexRef.current = 0;
     audioSmoothRef.current = { ...stateRef.current.point };
     return true;
   };
+
+  useEffect(() => {
+    if (!enabled || config.audioModel !== 'acoustic' || !acousticProfileFor(config)) {
+      setAcousticStatus(config.audioModel === 'acoustic' ? 'unsupported' : 'legacy');
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      setAcousticStatus('loading');
+      await ensureAudio();
+      const ctx = ctxRef.current, nodes = nodesRef.current;
+      if (!ctx?.audioWorklet || typeof window.AudioWorkletNode !== 'function') {
+        if (!cancelled) setAcousticStatus('fallback');
+        return;
+      }
+      try {
+        nodes.acousticPromise ??= ctx.audioWorklet.addModule(new URL('./engineAcousticProcessor.js', import.meta.url).href).then(() => {
+          if (ctxRef.current !== ctx) return;
+          const node = new window.AudioWorkletNode(ctx, 'apex-engine-acoustics', {numberOfInputs:0, numberOfOutputs:3, outputChannelCount:[2,1,1]});
+          nodes.acousticGains = [nodes.exhaustBus,nodes.intakeBus,nodes.blockBus].map((bus,index) => {
+            const gain = ctx.createGain();gain.gain.value=0;node.connect(gain,index,0);gain.connect(bus);return gain;
+          });
+          node.onprocessorerror = () => { nodes.acousticFailed=true;setAcousticStatus('fallback'); };
+          nodes.acousticNode = node;
+        });
+        await nodes.acousticPromise;
+        if (!cancelled) setAcousticStatus(nodes.acousticNode && !nodes.acousticFailed ? 'ready' : 'fallback');
+      } catch { if (!cancelled) setAcousticStatus('fallback'); }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [enabled, config.audioModel, config.engineLayout, config.calibrationId, config.gameMeta?.name]);
 
   const triggerRelease = (strength = 0.18, flutter = false) => {
     const localCtx = ctxRef.current;
@@ -682,6 +723,20 @@ export function useEngineAudio(config, point, enabled, throttle) {
         const eventHz = Math.max(10, localPoint.eventHz);
         const basePeriod = 1 / eventHz;
         const pattern = getFiringPattern(localConfig.engineLayout, localConfig.v8Crank, localConfig.firingSoundMode);
+        const acousticProfile = acousticProfileFor(localConfig);
+        const useAcoustics = localConfig.audioModel === 'acoustic' && acousticProfile && localNodes.acousticNode && !localNodes.acousticFailed;
+        const micProfile = getMicProfile(localConfig.micPosition);
+        const legacyLevel = useAcoustics ? 0 : 1;
+        if(!useAcoustics && localNodes.acousticWasActive) nextFireTimeRef.current=localCtx.currentTime+.005;
+        localNodes.acousticWasActive=Boolean(useAcoustics);
+        for (const bank of [localNodes.exhaustRes,localNodes.intakeRes,localNodes.blockRes]) bank.input.gain.setTargetAtTime(legacyLevel,localCtx.currentTime,.025);
+        if (localNodes.acousticNode) {
+          localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),profile:acousticProfile?.id,rpm:targetPoint.rpm,throttle:localThrottle,load:clamp((targetPoint.mapKpa-30)/75,0,1),header:localConfig.headerType,exhaust:localConfig.exhaustType});
+          const levels=[micProfile.exhaust*(1.5+localConfig.engineLoudness*.85),micProfile.intake*(.7+localConfig.engineLoudness*.3),micProfile.block];
+          localNodes.acousticGains.forEach((gain,index)=>gain.gain.setTargetAtTime(useAcoustics?levels[index]:0,localCtx.currentTime,.025));
+        }
+        if(useAcoustics && localNodes.acousticRoomPosition !== localConfig.micPosition){localNodes.acousticRoom.buffer=acousticRoomBuffer(localCtx,localConfig.micPosition);localNodes.acousticRoomPosition=localConfig.micPosition;}
+        localNodes.acousticRoomSend.gain.setTargetAtTime(useAcoustics?micProfile.room*(.35+(localConfig.roomSize??.38)*1.1):0,localCtx.currentTime,.04);
         const lookAhead = localCtx.currentTime + 0.12;
         nextFireTimeRef.current = recoverFireTime(nextFireTimeRef.current, localCtx.currentTime);
         localNodes.master.gain.setTargetAtTime(localConfig.cinemaMode ? 0.74 : 0.60, localCtx.currentTime, 0.08);
@@ -706,7 +761,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
         localNodes.micHp.frequency.setTargetAtTime(mic.hp, localCtx.currentTime, 0.05);
         const muscleHighCut = oldMuscleV8 ? clamp(4550 - localPoint.dispL * 155 - classicV8HeavyBlend * 650, 2700, 5200) : mic.lp;
         localNodes.micLp.frequency.setTargetAtTime(Math.min(mic.lp, muscleHighCut), localCtx.currentTime, 0.05);
-        localNodes.roomSend.gain.setTargetAtTime(mic.room * (0.35 + (localConfig.roomSize || 0.38) * 1.1), localCtx.currentTime, 0.08);
+        localNodes.roomSend.gain.setTargetAtTime(legacyLevel * mic.room * (0.35 + (localConfig.roomSize || 0.38) * 1.1), localCtx.currentTime, 0.08);
         localNodes.roomReturn.gain.setTargetAtTime(mic.room * 0.18, localCtx.currentTime, 0.08);
 
         const i4LowFreq = (localConfig.engineLayout === "i4" || localConfig.engineLayout === "flat4") ? ({ oldSohcI4: 72, hotHatchNaI4: 96, streetNaI4: 84, classicTurboI4: 76, boxerTurboFlat4: 46, saabUnequalTurboI4: 46, saabTurboI4: 68, driftTurboI4: 88, modernTurboI4: 82, hybridPrototypeI4: 92, dieselI4: 58 }[i4Subtype] || 84) + localPoint.dispL * 8 + (profile.lowBurble || 0) * 26 : null;
@@ -744,11 +799,12 @@ export function useEngineAudio(config, point, enabled, throttle) {
         localNodes.turboOsc.frequency.setTargetAtTime(1600 + boostNorm * 4100, localCtx.currentTime, 0.10);
         localNodes.turboGain.gain.setTargetAtTime(0, localCtx.currentTime, 0.12);
         localNodes.intakeWind.filter.frequency.setTargetAtTime(650 + localPoint.rpm * 0.07 + localThrottle * 500, localCtx.currentTime, 0.08);
-        localNodes.intakeWind.gain.gain.setTargetAtTime(throttleAudio > 0.38 ? ((throttleAudio - 0.38) * 0.010 + (profile.intakeBias || 0) * 0.002) * mic.intake : 0, localCtx.currentTime, 0.08);
+        localNodes.intakeWind.gain.gain.setTargetAtTime(!useAcoustics && throttleAudio > 0.38 ? ((throttleAudio - 0.38) * 0.010 + (profile.intakeBias || 0) * 0.002) * mic.intake : 0, localCtx.currentTime, 0.08);
         localNodes.mechBed.filter.frequency.setTargetAtTime(profile.mechanicalFreq + localPoint.rpm * 0.04, localCtx.currentTime, 0.06);
         localNodes.mechBed.filter.Q.setTargetAtTime(profileSharpness, localCtx.currentTime, 0.06);
-        localNodes.mechBed.gain.gain.setTargetAtTime(throttleAudio > 0.18 ? (profileTopTick * 0.001 + (profile.mechanicalGain || 0.02) * 0.002) * mic.block : 0, localCtx.currentTime, 0.10);
+        localNodes.mechBed.gain.gain.setTargetAtTime(!useAcoustics && throttleAudio > 0.18 ? (profileTopTick * 0.001 + (profile.mechanicalGain || 0.02) * 0.002) * mic.block : 0, localCtx.currentTime, 0.10);
 
+        if (useAcoustics) nextFireTimeRef.current = lookAhead;
         while (nextFireTimeRef.current < lookAhead) {
           const fireTime = nextFireTimeRef.current;
           const roughness = clamp((profile.roughness || 0.12) + localConfig.soundTexture * 0.015, 0.02, localConfig.engineLayout === "rotary2" ? 0.18 : localConfig.engineLayout === "v8" && localConfig.v8Crank === "crossplane" ? 0.22 : localConfig.engineLayout === "v6" ? 0.18 : 0.14);
@@ -891,7 +947,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
           stab.start(localCtx.currentTime, Math.random() * 0.2, 0.08);
           stab.stop(localCtx.currentTime + 0.08);
         }
-        if (localPoint.rpm > 2600 && throttleDrop > 0.18) {
+        if (!useAcoustics && localPoint.rpm > 2600 && throttleDrop > 0.18) {
           const popChance = clamp((localPoint.rpm - 2500) / 4500, 0.2, 1.0) * clamp(load + localPoint.boostPsi / 12, 0.4, 1.0);
           if (Math.random() < popChance * 0.18 && localCtx.currentTime - lastPopTimeRef.current > 0.08) {
             triggerPop(localCtx.currentTime, 0.6 + popChance * 0.7);
@@ -927,7 +983,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
     };
   }, [enabled]);
 
-  return { ensureAudio, stopAudio, triggerRelease };
+  return { ensureAudio, stopAudio, triggerRelease, acousticStatus };
 }
 
 export function useApexEngineAudio({ config, point, enabled, throttle, pageActive }) {
