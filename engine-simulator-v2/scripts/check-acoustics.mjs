@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {build} from 'esbuild';
-import {EngineAcousticModel,acousticProfileFor} from '../src/lib/engineAcousticProcessor.js';
+import {EngineAcousticModel,acousticProfileFor,valveTimingFor} from '../src/lib/engineAcousticProcessor.js';
 const root=new URL('../',import.meta.url).pathname,out=root+'node_modules/.cache/acoustic-library.mjs';
 fs.mkdirSync(root+'node_modules/.cache',{recursive:true});
-await build({stdin:{contents:fs.readFileSync(root+'src/EngineSimulatorV2.tsx','utf8')+'\nexport {presets,configForPreset,defaultConfig,sanitizeConfig,stepRuntime,resolveIdleRpm};',resolveDir:root+'src',loader:'tsx'},tsconfig:root+'tsconfig.app.json',bundle:true,platform:'node',format:'esm',outfile:out});
+await build({stdin:{contents:fs.readFileSync(root+'src/EngineSimulatorV2.tsx','utf8')+'\nexport {presets,configForPreset,defaultConfig,sanitizeConfig,stepRuntime,resolveIdleRpm,documentedAcoustics};',resolveDir:root+'src',loader:'tsx'},tsconfig:root+'tsconfig.app.json',bundle:true,platform:'node',format:'esm',outfile:out});
 const app=await import(out);
 const configs=app.presets.filter(p=>p.group==='factory').map(p=>({name:p.name,config:app.configForPreset(p)}));
 const stats=data=>{let energy=0,mean=0,peak=0;for(const v of data){assert.ok(Number.isFinite(v));energy+=v*v;mean+=v;peak=Math.max(peak,Math.abs(v));}return {rms:Math.sqrt(energy/data.length),mean:mean/data.length,peak};};
@@ -56,6 +56,24 @@ const a=new EngineAcousticModel(),b=new EngineAcousticModel();for(const m of [a,
 const one=Array.from({length:4},()=>new Float32Array(48000)),many=one.map(()=>new Float32Array(48000));a.render(one);for(let i=0;i<48000;i+=97)b.render(many.map(d=>d.subarray(i,Math.min(i+97,48000))));assert.deepEqual(one,many);
 a.update({components:acousticProfileFor(configs[0].config),active:false});a.render(one);assert.ok(stats(one[0].subarray(24000)).peak<.0001);
 assert.equal(app.sanitizeConfig({audioModel:'legacy'}).audioModel,'legacy');assert.equal(app.sanitizeConfig({}).audioModel,'acoustic');assert.equal(app.sanitizeConfig({camOverlapDeg:NaN}).camOverlapDeg,undefined);
+// Documented values are preset inputs; names never enter the shared DSP.
+const references=app.documentedAcoustics.map(ref=>({...app.configForPreset(app.presets.find(p=>p.name===ref.base)),...ref.overrides}));
+assert.equal(references[0].valvesPerCylinder,5);assert.equal(acousticProfileFor(references[0]).camDrive,'belt_chain');
+const saab=valveTimingFor(references[1]),nissan=valveTimingFor(references[2]);
+assert.equal(saab.geometricOverlap,30);assert.equal(saab.intakeDuration,240);assert.equal(saab.exhaustDuration,240);
+assert.ok(saab.effectiveOverlap<8,'seat overlap must not create race-cam lope');assert.ok(Math.abs(idle(references[1]).rippleRpm)<1e-9);
+assert.equal(nissan.geometricOverlap,1);assert.equal(nissan.intakeDuration,240);assert.equal(nissan.inletLift,9.2);
+for(const c of references){const wave=render(c).data;assert.deepEqual(wave,render({...c,gameMeta:{name:'renamed'}}).data);wave.forEach(stats);}
+const off=render({...references[2],acousticVtcMode:'off'}),on=render({...references[2],acousticVtcMode:'on'});
+assert.ok(on.model.vtc>19.9);assert.equal(off.model.vtc,0);assert.notDeepEqual(off.data[1],on.data[1]);
+assert.ok(render(references[2],48000,1,{rpm:6000}).model.vtc<.01,'auto advance drops out above range');
+assert.ok(render(references[2],48000,1,{rpm:3000,load:.9}).model.vtc>19.9,'loaded warm sweep advances intake');
+for(const [key,value,channel] of [['intakePipeM',1.5,1],['intakePlenumL',4,1],['intakeBoreMm',100,1],['silencerCount',2,0],['silencerVolumeL',20,0]]){
+ const c={...stock,silencerCount:1};assert.notDeepEqual(render(c).data[channel],render({...c,[key]:value}).data[channel],key+' shapes the component path');
+}
+for(const sr of [32000,44100,96000]){const c={...references[2],silencerCount:2,silencerVolumeL:25,intakePlenumL:.3,intakePipeM:.1,intakeBoreMm:120};render(c,sr).data.forEach(stats);}
+assert.equal(valveTimingFor({valveEvents:{inletOpen:NaN}}),null);
+console.log('PASS: documented variants, lift-weighted stock idle, VTC states, intake resonance, serial silencers and sample-rate stability.');
 console.log('PASS: 240 engines, 11 layouts/3 sample rates, hardware responses, name-independent waveforms, lope/inertia, fuel cut, cadence and reference ranges.');
 // Actual worklet registration and port/render across each architecture.
 const {OfflineAudioContext,AudioWorkletNode}=await import('node-web-audio-api');
@@ -69,3 +87,4 @@ for(const layout of ['i3','i4','i5','i6','v4','v6','flat4','flat6','v8','v10','v
  console.log(layout+' actual AudioWorklet PASS');
 }
 fs.unlinkSync(out);
+

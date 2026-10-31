@@ -2,6 +2,7 @@ import { engineCalibrations, calibrationById, calibrationForPreset, calibrationF
 import { compressorMaps, mapEfficiency, correctedFlow, type CompressorMapKey } from "./data/compressorMaps";
 import { WATTS_PER_HP, NM_PER_LBFT, PA_PER_PSI, KG_S_TO_LB_MIN, powerHpFromTorque, torqueFromPowerHp, bmepPsiFromTorque, fuelProperties, mixtureEfficiency, ignitionEfficiency, injectorCcFromFuel, angularAccelerationRpmS, throttleAfterStep } from "./lib/powertrainMath";
 import { expandFactoryPresets, manufacturerReferences } from "./data/factoryEngines";
+import { documentedAcoustics } from "./data/documentedAcoustics";
 import { acousticProfileFor } from "./lib/engineAcousticProcessor.js";
 import { useEngineAudio, createProceduralSampleBuffer } from "./lib/engineAudio.js";
 import { clamp, lerp, smoothStep, engineLayouts } from "./lib/engineAudioPrimitives";
@@ -46,7 +47,15 @@ export type SimConfig = {
   audioModel?: "legacy" | "acoustic";
   airCleaner?: "auto" | "airbox" | "open_filter" | "trumpets";
   carbSecondary?: "progressive" | "synchronous";
-  camDrive?: "belt" | "chain" | "gear";
+  camDrive?: "belt" | "chain" | "gear" | "belt_chain";
+  intakePipeM?: number;
+  intakeBoreMm?: number;
+  intakePlenumL?: number;
+  silencerCount?: number;
+  silencerVolumeL?: number;
+  valveEvents?: {inletOpen:number;inletClose:number;exhaustOpen:number;exhaustClose:number;inletLiftMm:number;exhaustLiftMm:number};
+  intakeCamAdvanceDeg?: number;
+  acousticVtcMode?: "off" | "on" | "auto";
   exhaustCrossover?: "none" | "h" | "x";
   catalyst?: "stock" | "high_flow" | "none";
   camOverlapDeg?: number;
@@ -560,9 +569,17 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     audioModel: config.audioModel === "legacy" ? "legacy" : "acoustic",
     airCleaner: coerceOption(config.airCleaner,["auto","airbox","open_filter","trumpets"] as const,"auto"),
     carbSecondary: coerceOption(config.carbSecondary,["progressive","synchronous"] as const,"progressive"),
-    camDrive: coerceOption(config.camDrive,["belt","chain","gear"] as const,"chain"),
+    camDrive: coerceOption(config.camDrive,["belt","chain","gear","belt_chain"] as const,"chain"),
     exhaustCrossover: coerceOption(config.exhaustCrossover,["none","h","x"] as const,"none"),
     catalyst: coerceOption(config.catalyst,["stock","high_flow","none"] as const,"stock"),
+    intakePipeM: Number.isFinite(config.intakePipeM)?clamp(config.intakePipeM!,.1,2):undefined,
+    intakeBoreMm: Number.isFinite(config.intakeBoreMm)?clamp(config.intakeBoreMm!,30,120):undefined,
+    intakePlenumL: Number.isFinite(config.intakePlenumL)?clamp(config.intakePlenumL!,.3,8):undefined,
+    silencerCount: Number.isFinite(config.silencerCount)?Math.round(clamp(config.silencerCount!,0,2)):undefined,
+    silencerVolumeL: Number.isFinite(config.silencerVolumeL)?clamp(config.silencerVolumeL!,1,25):undefined,
+    intakeCamAdvanceDeg: Number.isFinite(config.intakeCamAdvanceDeg)?clamp(config.intakeCamAdvanceDeg!,0,40):undefined,
+    acousticVtcMode: coerceOption(config.acousticVtcMode,["off","on","auto"] as const,"off"),
+    valveEvents: config.valveEvents && Object.values(config.valveEvents).length===6 && Object.values(config.valveEvents).every(Number.isFinite)?config.valveEvents:undefined,
     camOverlapDeg: Number.isFinite(config.camOverlapDeg)?clamp(config.camOverlapDeg!,0,100):undefined,
     flywheelInertiaKgM2: Number.isFinite(config.flywheelInertiaKgM2)?clamp(config.flywheelInertiaKgM2!,.04,1):.18,
     exhaustRunnerM: Number.isFinite(config.exhaustRunnerM)?clamp(config.exhaustRunnerM!,.15,1.5):undefined,
@@ -1965,26 +1982,37 @@ export default function EngineSimulatorV2() {
                     </select>
                     <p className="mt-2 text-xs text-slate-400">{acousticStatus==='ready'?'Component acoustics active':acousticStatus==='off'?'Audio is off · enable it to audition':acousticStatus==='loading'?'Loading acoustic model…':acousticStatus==='fallback'?'Acoustic model unavailable · established voice is playing':acousticStatus==='unsupported'?'This engine uses its established voice':'Legacy voice selected'}. Audio must be enabled to audition.</p>
                     <div className="mt-3 flex flex-wrap gap-2">{[['B234R','Saab B234R'],['Chevrolet LS3 6.2','Chevrolet LS3'],['Honda F20C','Honda F20C']].map(([name,label])=><Button key={name} className={UI.buttonOutline} onClick={()=>{const preset=presets.find(p=>p.name===name);if(preset){applyPreset(preset);setConfig(current=>({...current,audioModel:'acoustic'}));}}}>Try {label}</Button>)}</div>
+                    <details className="mt-3 text-xs text-slate-300"><summary className="cursor-pointer">Documented comparison setups · AGU / B204L / S14</summary>
+                      <p className="my-2">These load specific variants. Hardware evidence is listed below; unmeasured pipe and chamber dimensions retain shared editable estimates. Boost and power figures are not newly calibrated.</p>
+                      {documentedAcoustics.map(reference=><div key={reference.name} className="my-3"><Button className={UI.buttonOutline} onClick={()=>{const preset=presets.find(p=>p.name===reference.base);if(preset){applyPreset(preset);setConfig(sanitizeConfig({...configForPreset(preset),...reference.overrides,audioModel:'acoustic',calibrationId:undefined,calibrationEnabled:false,gameMeta:{name:reference.name}}));}}}>Load {reference.name}</Button><p className="mt-1">{reference.evidence}</p><a className="text-sky-300 underline" href={reference.source} target="_blank" rel="noreferrer">Factory documentation</a></div>)}
+                    </details>
                     <p className="mt-2 text-xs text-slate-400">Sound follows the hardware below, not the engine name. Dimensions and cam overlap are inferred unless you set them. Room responses are synthetic; recordings have not validated accuracy.</p>
                   </div>
 
                   {acousticHardware && <details open className="rounded-xl border border-slate-700 p-3 text-sm text-slate-300"><summary className="cursor-pointer">Acoustic components and assumptions</summary>
-                    <p className="my-2 text-xs text-slate-400">{acousticHardware.cylinders} cylinders · {fmt(acousticHardware.displacementL,1)} L · {acousticHardware.banked?'Separate banks':'Single collector'} · {config.camOverlapDeg===undefined?'inferred':'set'} idle overlap {fmt(acousticHardware.idleOverlap)}° · idle {fmt(resolveIdleRpm(config))} RPM. Existing cam, injection, intake, header and exhaust options are under Engine.</p>
+                    <p className="my-2 text-xs text-slate-400">{acousticHardware.cylinders} cylinders · {fmt(acousticHardware.displacementL,1)} L · {acousticHardware.banked?'Separate banks':'Single collector'} · {config.camOverlapDeg!==undefined?'set':acousticHardware.valveTiming?'lift-weighted estimate':'inferred'} idle overlap {fmt(acousticHardware.idleOverlap)}° · idle {fmt(resolveIdleRpm(config))} RPM. Existing cam, injection, intake, header and exhaust options are under Engine.</p>
                     <div className="grid gap-3">
                       <label>Air cleaner<select aria-label="Air cleaner" className={UI.select} value={config.airCleaner??'auto'} onChange={e=>updateConfig('airCleaner',e.target.value as SimConfig['airCleaner'])}><option value="auto">Infer from intake</option><option value="airbox">Enclosed airbox</option><option value="open_filter">Open filter</option><option value="trumpets">Open trumpets</option></select></label>
-                      <label>Cam drive<select aria-label="Cam drive" className={UI.select} value={config.camDrive??'chain'} onChange={e=>updateConfig('camDrive',e.target.value as SimConfig['camDrive'])}><option value="chain">Chain · assumed</option><option value="belt">Belt</option><option value="gear">Gear drive</option></select></label>
+                      <label>Cam drive<select aria-label="Cam drive" className={UI.select} value={config.camDrive??'chain'} onChange={e=>updateConfig('camDrive',e.target.value as SimConfig['camDrive'])}><option value="chain">Chain · assumed</option><option value="belt">Belt</option><option value="belt_chain">Belt + short inter-cam chain</option><option value="gear">Gear drive</option></select></label>
                       {config.injectionType==='carb' && <label>Carb secondaries<select aria-label="Carb secondaries" className={UI.select} value={config.carbSecondary??'progressive'} onChange={e=>updateConfig('carbSecondary',e.target.value as SimConfig['carbSecondary'])}><option value="progressive">Progressive</option><option value="synchronous">Synchronous</option></select></label>}
                       {acousticHardware.banked && <label>Exhaust crossover<select aria-label="Exhaust crossover" className={UI.select} value={config.exhaustCrossover??'none'} onChange={e=>updateConfig('exhaustCrossover',e.target.value as SimConfig['exhaustCrossover'])}><option value="none">Independent banks · assumed</option><option value="h">H-pipe</option><option value="x">X-pipe</option></select></label>}
                       <label>Catalyst<select aria-label="Catalyst" className={UI.select} value={config.catalyst??'stock'} onChange={e=>updateConfig('catalyst',e.target.value as SimConfig['catalyst'])}><option value="stock">Stock · assumed</option><option value="high_flow">High flow</option><option value="none">None</option></select></label>
                       <label className="flex items-center gap-2"><input type="checkbox" checked={config.camOverlapDeg!==undefined} onChange={e=>updateConfig('camOverlapDeg',e.target.checked?acousticHardware.overlap:undefined)}/>Set explicit cam overlap</label>
                       {config.camOverlapDeg!==undefined && <LabeledSlider label="Cam overlap" value={config.camOverlapDeg} min={0} max={100} onChange={v=>updateConfig('camOverlapDeg',v)} display={`${fmt(config.camOverlapDeg)}° · sound estimate`} />}
+                      {acousticHardware.valveTiming && <div className="text-xs text-slate-400">Documented valve events: inlet opens {acousticHardware.valveTiming.io}° BTDC, closes {acousticHardware.valveTiming.ic}° ABDC; exhaust opens {acousticHardware.valveTiming.eo}° BBDC, closes {acousticHardware.valveTiming.ec}° ATDC. Negative opening means after TDC. Lift {acousticHardware.valveTiming.inletLift}/{acousticHardware.valveTiming.exhaustLift} mm. Geometric overlap {acousticHardware.valveTiming.geometricOverlap}° is not the idle-lope control; the lift curve is approximated. <Button className={UI.buttonOutline} onClick={()=>updateConfig('valveEvents',undefined)}>Use inferred valve timing</Button></div>}
+                      {!!config.intakeCamAdvanceDeg && <label>Intake cam advance<select aria-label="Intake cam advance" className={UI.select} value={config.acousticVtcMode??'off'} onChange={e=>updateConfig('acousticVtcMode',e.target.value as SimConfig['acousticVtcMode'])}><option value="off">Base timing</option><option value="on">Advanced {config.intakeCamAdvanceDeg}°</option><option value="auto">Warm loaded sweep approximation</option></select><span className="text-xs text-slate-400">Auto assumes warm engine and moving vehicle; 1050–5700 RPM, estimated load above 50%. Full road-speed, coolant and low-speed ECU logic is not simulated.</span></label>}
+                      <LabeledSlider label="Intake pipe length" value={acousticHardware.intakePipe} min={.1} max={2} step={.05} onChange={v=>updateConfig('intakePipeM',v)} display={`${fmt(acousticHardware.intakePipe,2)} m · estimated geometry`} />
+                      <LabeledSlider label="Intake pipe bore" value={acousticHardware.intakeBore} min={30} max={120} step={1} onChange={v=>updateConfig('intakeBoreMm',v)} display={`${fmt(acousticHardware.intakeBore)} mm · estimated geometry`} />
+                      <LabeledSlider label="Intake plenum volume" value={acousticHardware.plenum} min={.3} max={8} step={.1} onChange={v=>updateConfig('intakePlenumL',v)} display={`${fmt(acousticHardware.plenum,1)} L · estimated geometry`} />
+                      <LabeledSlider label="Serial exhaust silencers" value={acousticHardware.silencerCount} min={0} max={2} step={1} onChange={v=>updateConfig('silencerCount',v)} display={`${acousticHardware.silencerCount} · additional chamber model`} />
+                      {!!acousticHardware.silencerCount && <LabeledSlider label="Silencer chamber volume" value={acousticHardware.silencerVolume} min={1} max={25} step={.5} onChange={v=>updateConfig('silencerVolumeL',v)} display={`${fmt(acousticHardware.silencerVolume,1)} L each · estimated`} />}
                       <LabeledSlider label="Flywheel inertia" value={config.flywheelInertiaKgM2??.18} min={.04} max={1} step={.02} onChange={v=>updateConfig('flywheelInertiaKgM2',v)} display={`${fmt(config.flywheelInertiaKgM2??.18,2)} kg·m² · affects Drive`} />
                       <LabeledSlider label="Idle speed trim" value={config.idleRpm} min={650} max={1200} step={10} onChange={v=>updateConfig('idleRpm',v)} display={`${fmt(resolveIdleRpm(config))} RPM resolved`} />
                       <LabeledSlider label="Exhaust runner length" value={config.exhaustRunnerM??acousticHardware.runners.reduce((a:number,b:number)=>a+b,0)/acousticHardware.cylinders} min={.15} max={1.5} step={.01} onChange={v=>updateConfig('exhaustRunnerM',v)} display={`${fmt(config.exhaustRunnerM??acousticHardware.runners.reduce((a:number,b:number)=>a+b,0)/acousticHardware.cylinders,2)} m · ${config.exhaustRunnerM===undefined?'inferred':'set'}`} />
                       <LabeledSlider label="Collector length" value={config.collectorLengthM??acousticHardware.collector} min={.3} max={3} step={.05} onChange={v=>updateConfig('collectorLengthM',v)} display={`${fmt(config.collectorLengthM??acousticHardware.collector,2)} m · ${config.collectorLengthM===undefined?'inferred':'set'}`} />
                       <LabeledSlider label="Tailpipe length" value={config.tailpipeLengthM??acousticHardware.tailpipe} min={.5} max={5} step={.05} onChange={v=>updateConfig('tailpipeLengthM',v)} display={`${fmt(config.tailpipeLengthM??acousticHardware.tailpipe,2)} m · ${config.tailpipeLengthM===undefined?'inferred':'set'}`} />
-                      <Button className={UI.buttonOutline} onClick={()=>setConfig(current=>({...current,exhaustRunnerM:undefined,collectorLengthM:undefined,tailpipeLengthM:undefined,camOverlapDeg:undefined}))}>Restore inferred dimensions and overlap</Button>
-                    </div><p className="mt-2 text-xs text-slate-400">New acoustic geometry, catalyst and overlap controls shape sound only; flywheel inertia also affects acceleration. They do not recalibrate power figures. Aggressive overlap makes idle uneven; carbs alone do not add lope.</p>
+                      <Button className={UI.buttonOutline} onClick={()=>setConfig(current=>({...current,exhaustRunnerM:undefined,collectorLengthM:undefined,tailpipeLengthM:undefined,intakePipeM:undefined,intakeBoreMm:undefined,intakePlenumL:undefined,silencerVolumeL:undefined,camOverlapDeg:undefined}))}>Restore inferred dimensions and overlap</Button>
+                    </div><p className="mt-2 text-xs text-slate-400">New acoustic geometry, catalyst and overlap controls shape sound only; flywheel inertia also affects acceleration. They do not recalibrate power figures. Documented seat timing uses an assumed lift curve to avoid exaggerated stock idle lope; explicit overlap remains a sound estimate. Aggressive effective overlap makes idle uneven; carbs alone do not add lope.</p>
                   </details>}
                   <div className="grid gap-2">
                     <div className="text-sm text-slate-300">Legacy firing / pulse override</div>
@@ -2125,6 +2153,7 @@ export default function EngineSimulatorV2() {
     </div>
   );
 }
+
 
 
 
