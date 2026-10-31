@@ -1,7 +1,7 @@
 export const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 export const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 export const smoothStep = (x: number, e0: number, e1: number) => {
-  const t = clamp((x - e0) / Math.max(e1 - e0, 1), 0, 1);
+  const t = clamp((x - e0) / Math.max(e1 - e0, 1e-9), 0, 1);
   return t * t * (3 - 2 * t);
 };
 

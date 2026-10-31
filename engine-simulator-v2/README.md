@@ -82,3 +82,15 @@ Run `npm run fit:calibration` after changing baseline physics, then review and c
 The peak-constraint pass corrects F20C hardware to a plenum intake, discrete VTEC lift switching without continuous intake cam phasing, and a 4-2-1 header. It also corrects the S65 to a cross-plane crank. Hardware sources: [Honda S2000 powertrain](https://hondanews.com/en-US/honda-automobiles/releases/release-5cf69ff7f30a01d81cc648004c34c870-honda-s2000-powertrain), [BMW M3 engine media information, March 2007](https://www.press.bmwgroup.com/global/article/attachment/T0012000EN/16623). Existing approximate turbo scheduling is retained; this pass does not claim to reconstruct factory boost traces.
 
 At the reference conditions, all six profiles have both peak magnitudes within 0.5% of published values on the independent RPM grid, and peak locations within 200 rpm. This is a fitting consistency result, not a claim of 0.5% physical accuracy. The 234 other examples remain unverified against measured output. Existing saved setups retain their hardware settings; reselect the factory example to load corrected hardware.
+
+## Audio quality pass
+
+The established subtype voices, firing patterns, pulse accents and cinematic V8/V12 cadence are retained. The audio-only smooth-step helper now handles fractional throttle ranges correctly, so idle texture fades out under load. The shared physics calculations are unaffected.
+
+Superchargers add a separate two-harmonic whine layer, driven by RPM, drive ratio, load, boost, blower type and the existing loudness control. Harmonic orders are sound-design approximations, not measured compressor acoustics. Recirculation produces a softer filtered return, atmospheric dump a sharper hiss, and no valve a restrained flutter illustration reduced by the anti-surge setting. This does not simulate physical compressor surge.
+
+Exhaust keeps its existing saturation. Intake, mechanical, induction and effect buses bypass that shaper; their clean gain matches its small-signal gain. Dry and room returns now share compression, microphone filtering and output protection. The final oversampled soft guard is linear below amplitude 0.8 and rounds transient overshoots above that level. Cinema gain now responds immediately to configuration changes.
+
+Missed combustion events are skipped after a scheduling stall; stop/restart is protected against a delayed suspend from an earlier stop. Transient sources disconnect on completion. The main-thread lookahead scheduler remains in use; this is not an AudioWorklet migration.
+
+`npm run test:audio` checks fractional blends, blower pitch and mute controls, valve options, stale-event recovery and restart races. It renders the production audio graph through the native `node-web-audio-api` offline context for turbo, V8, V12, three blower types and a maximum-mix case, checking finite non-silent output and peak headroom. It uses a deterministic control clock and React hook driver, not browser playback, and does not establish subjective sound quality or cross-browser equivalence. A browser listening comparison remains necessary.

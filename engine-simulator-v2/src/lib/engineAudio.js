@@ -1,6 +1,8 @@
 // Ported from sventurb0/apex_syndicate engineAudio.js (blob 1afe193869d6a584bddfa2859d3b8960951f5b70).
 import { useEffect, useRef } from "react";
 
+import { blowerVoice, releaseVoice, recoverFireTime } from "./engineAudioDynamics";
+
 import { clamp, lerp, smoothStep, engineLayouts } from "./engineAudioPrimitives";
 
 // Local helper to avoid pulling extra non-audio exports from engineSim.
@@ -231,10 +233,22 @@ export function useEngineAudio(config, point, enabled, throttle) {
   const lastReleaseTimeRef = useRef(0);
   const lastSampleTimesRef = useRef({});
   const audioSmoothRef = useRef(null);
+  const lifecycleRef = useRef(0);
+  const transientVoicesRef = useRef(new Set());
+  const trackVoice = (source, ...nodes) => {
+    transientVoicesRef.current.add(source);
+    source.onended = () => {
+      transientVoicesRef.current.delete(source);
+      source.disconnect();
+      nodes.forEach(node => node.disconnect());
+    };
+  };
 
   useEffect(() => { stateRef.current = { config, point, throttle }; }, [config, point, throttle]);
 
   const closeAudio = async () => {
+    lifecycleRef.current += 1;
+    transientVoicesRef.current.clear();
     if (schedulerRef.current) {
       window.clearInterval(schedulerRef.current);
       schedulerRef.current = null;
@@ -288,6 +302,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
   };
 
   const stopAudio = async () => {
+    const generation = ++lifecycleRef.current;
     if (schedulerRef.current) {
       window.clearInterval(schedulerRef.current);
       schedulerRef.current = null;
@@ -296,11 +311,14 @@ export function useEngineAudio(config, point, enabled, throttle) {
     const ctx = ctxRef.current;
     if (nodes && ctx) {
       const now = ctx.currentTime;
+      for (const source of transientVoicesRef.current) {
+        try { source.stop(now + 0.06); } catch { /* already stopped */ }
+      }
       nodes.master.gain.cancelScheduledValues(now);
       nodes.master.gain.setTargetAtTime(0.0001, now, 0.025);
       try {
         await new Promise((resolve) => window.setTimeout(resolve, 80));
-        if (ctx.state === "running") await ctx.suspend();
+        if (generation === lifecycleRef.current && ctxRef.current === ctx && ctx.state === "running") await ctx.suspend();
       } catch { /* ignored */ }
     }
   };
@@ -434,9 +452,28 @@ export function useEngineAudio(config, point, enabled, throttle) {
     const roomReturn = ctx.createGain();
     roomReturn.gain.value = 0.001;
 
-    drive.connect(comp).connect(micHp).connect(micLp).connect(master).connect(ctx.destination);
-    drive.connect(roomSend).connect(roomDelay).connect(roomFeedback).connect(roomDelay);
-    roomDelay.connect(roomReturn).connect(master);
+    const dryMix = ctx.createGain();
+    const roomMix = ctx.createGain();
+    const cleanGain = ctx.createGain();
+    cleanGain.gain.value = 2.2; // match the shaper's small-signal gain without distortion
+    // Transparent below 0.8; catches short overshoots which compressor attack can miss.
+    const outputGuard = ctx.createWaveShaper();
+    outputGuard.curve = Float32Array.from({length:4097}, (_, i) => {
+      const x = i / 2048 - 1, a = Math.abs(x);
+      return a <= 0.8 ? x : Math.sign(x) * (0.8 + 0.15 * Math.tanh((a - 0.8) / 0.15));
+    });
+    outputGuard.oversample = "4x";
+    const peakComp = ctx.createDynamicsCompressor();
+    peakComp.threshold.value = -3;
+    peakComp.knee.value = 0;
+    peakComp.ratio.value = 20;
+    peakComp.attack.value = 0.001;
+    peakComp.release.value = 0.06;
+    drive.connect(dryMix);
+    cleanGain.connect(dryMix);
+    dryMix.connect(roomMix).connect(comp).connect(micHp).connect(micLp).connect(peakComp).connect(master).connect(outputGuard).connect(ctx.destination);
+    dryMix.connect(roomSend).connect(roomDelay).connect(roomFeedback).connect(roomDelay);
+    roomDelay.connect(roomReturn).connect(roomMix);
 
     const exhaustBus = ctx.createGain();
     const intakeBus = ctx.createGain();
@@ -444,10 +481,10 @@ export function useEngineAudio(config, point, enabled, throttle) {
     const airBus = ctx.createGain();
     const fxBus = ctx.createGain();
     exhaustBus.connect(drive);
-    intakeBus.connect(drive);
-    blockBus.connect(drive);
-    airBus.connect(drive);
-    fxBus.connect(drive);
+    intakeBus.connect(cleanGain);
+    blockBus.connect(cleanGain);
+    airBus.connect(cleanGain);
+    fxBus.connect(cleanGain);
 
     const exhaustRes = createResonatorBank([95, 240, 620], [1.0, 1.6, 2.4], [0.34, 0.26, 0.16], exhaustBus);
     const intakeRes = createResonatorBank([340, 760], [1.1, 2.2], [0.18, 0.14], intakeBus);
@@ -483,9 +520,22 @@ export function useEngineAudio(config, point, enabled, throttle) {
     turboOsc.connect(turboGain).connect(airBus);
     turboOsc.start();
 
+    const blowerOsc = ctx.createOscillator();
+    blowerOsc.type = "sine";
+    const blowerGain = ctx.createGain();
+    blowerGain.gain.value = 0;
+    blowerOsc.connect(blowerGain).connect(airBus);
+    blowerOsc.start();
+    const blowerHarmonic = ctx.createOscillator();
+    blowerHarmonic.type = "sine";
+    const blowerHarmonicGain = ctx.createGain();
+    blowerHarmonicGain.gain.value = 0;
+    blowerHarmonic.connect(blowerHarmonicGain).connect(airBus);
+    blowerHarmonic.start();
+
     const sampleBuffers = Object.fromEntries(PRIVATE_AUDIO_SAMPLE_KEYS.map((key) => [key, createProceduralSampleBuffer(ctx, key)]));
     ctxRef.current = ctx;
-    nodesRef.current = { ctx, master, micHp, micLp, roomSend, roomReturn, exhaustRes, intakeRes, blockRes, turboHiss, intakeWind, mechBed, turboOsc, turboGain, combustionBuffer, oldV8CombustionBuffer, i4CombustionBuffers, noiseBuffer, fxBus, sampleBuffers };
+    nodesRef.current = { ctx, blowerOsc, blowerGain, blowerHarmonic, blowerHarmonicGain, master, micHp, micLp, roomSend, roomReturn, exhaustRes, intakeRes, blockRes, turboHiss, intakeWind, mechBed, turboOsc, turboGain, combustionBuffer, oldV8CombustionBuffer, i4CombustionBuffers, noiseBuffer, fxBus, sampleBuffers };
     nextFireTimeRef.current = ctx.currentTime + 0.04;
     patternIndexRef.current = 0;
     audioSmoothRef.current = { ...stateRef.current.point };
@@ -497,18 +547,21 @@ export function useEngineAudio(config, point, enabled, throttle) {
     const localNodes = nodesRef.current;
     if (!enabled || !localCtx || !localNodes) return;
     const time = localCtx.currentTime;
+    const voice = releaseVoice(stateRef.current.config, strength);
+    if (voice.gain <= 0 || stateRef.current.config.induction !== 'turbo') return;
     const src = localCtx.createBufferSource();
-    src.buffer = localNodes.sampleBuffers[flutter ? "flutter" : "dumpSharp"];
-    src.playbackRate.setValueAtTime(flutter ? 0.76 + Math.random() * 0.12 : 0.9 + Math.random() * 0.12, time);
+    src.buffer = localNodes.sampleBuffers[voice.sample];
+    src.playbackRate.value = voice.rate;
     const filter = localCtx.createBiquadFilter();
-    filter.type = flutter ? "bandpass" : "highpass";
-    filter.frequency.value = flutter ? 1050 : 1400;
-    filter.Q.value = flutter ? 1.4 : 0.8;
+    filter.type = voice.filterType;
+    filter.frequency.value = voice.filterFreq;
+    filter.Q.value = voice.q;
     const gain = localCtx.createGain();
     gain.gain.setValueAtTime(0.0001, time);
-    gain.gain.exponentialRampToValueAtTime(0.03 + strength * 0.12, time + 0.008);
+    gain.gain.exponentialRampToValueAtTime(voice.gain, time + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.22);
     src.connect(filter).connect(gain).connect(localNodes.fxBus);
+    trackVoice(src, filter, gain);
     src.start(time);
     src.stop(time + 0.26);
   };
@@ -517,10 +570,15 @@ export function useEngineAudio(config, point, enabled, throttle) {
     if (!enabled) { stopAudio(); return undefined; }
     let cancelled = false;
     const start = async () => {
+      lifecycleRef.current += 1;
       const ok = await ensureAudio();
       if (!ok || cancelled || !ctxRef.current || !nodesRef.current) return;
       const ctx = ctxRef.current;
       const nodes = nodesRef.current;
+      nextFireTimeRef.current = ctx.currentTime + 0.04;
+      lastThrottleRef.current = stateRef.current.throttle;
+      lastBoostRef.current = stateRef.current.point.boostPsi;
+      audioSmoothRef.current = { ...stateRef.current.point };
       nodes.master.gain.setTargetAtTime(stateRef.current.config.cinemaMode ? 0.74 : 0.60, ctx.currentTime, 0.08);
       if (schedulerRef.current) window.clearInterval(schedulerRef.current);
 
@@ -545,8 +603,10 @@ export function useEngineAudio(config, point, enabled, throttle) {
         outGain.gain.setValueAtTime(0.0001, time);
         outGain.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), time + 0.01);
         outGain.gain.exponentialRampToValueAtTime(0.0001, time + Math.max(0.08, buffer.duration / Math.max(rate, 0.1)));
+        let sampleFilter;
         if (filterType && filterFreq) {
           const filter = localCtx.createBiquadFilter();
+          sampleFilter = filter;
           filter.type = filterType;
           filter.frequency.setValueAtTime(filterFreq, time);
           filter.Q.setValueAtTime(q, time);
@@ -554,6 +614,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
         } else {
           src.connect(outGain).connect(localNodes.fxBus);
         }
+        trackVoice(src, outGain, ...(sampleFilter ? [sampleFilter] : []));
         src.start(time);
         src.stop(time + Math.max(0.1, buffer.duration / Math.max(rate, 0.1) + 0.02));
       };
@@ -573,38 +634,21 @@ export function useEngineAudio(config, point, enabled, throttle) {
         gain.gain.exponentialRampToValueAtTime(0.030 * intensity, time + 0.004);
         gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.095);
         pop.connect(filter).connect(gain).connect(localNodes.fxBus);
+        trackVoice(pop, filter, gain);
         pop.start(time, Math.random() * 0.5, 0.10);
         pop.stop(time + 0.11);
         if (canTriggerSample("saabCrackle", time, 0.06)) triggerSample("saabCrackle", time, { gain: 0.012 * intensity, rate: 0.82 + Math.random() * 0.25, filterType: "bandpass", filterFreq: 1100 + intensity * 600, q: 1.0 });
       };
 
       const triggerChirp = (time, releaseStrength = 1) => {
-        const localCtx = ctxRef.current;
-        const localNodes = nodesRef.current;
-        if (!localCtx || !localNodes) return;
-        const duration = 0.24;
-        const releaseGainScale = clamp(0.7 + releaseStrength * 0.55, 0.8, 1.8);
-        const noise = localCtx.createBufferSource();
-        noise.buffer = localNodes.noiseBuffer;
-        const filter = localCtx.createBiquadFilter();
-        filter.type = "bandpass";
-        filter.frequency.setValueAtTime(1650 + releaseStrength * 900, time);
-        filter.Q.value = 1.2;
-        const gain = localCtx.createGain();
-        gain.gain.setValueAtTime(0.0001, time);
-        gain.gain.exponentialRampToValueAtTime(0.028 * releaseStrength * releaseGainScale, time + 0.008);
-        gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
-        noise.connect(filter).connect(gain).connect(localNodes.fxBus);
-        noise.start(time, Math.random() * 0.6, duration + 0.02);
-        noise.stop(time + duration + 0.03);
-        if (releaseStrength > 0.55 && canTriggerSample("flutter", time, 0.06)) triggerSample("flutter", time, { gain: 0.025 * releaseStrength, rate: 0.70 + Math.random() * 0.16, filterType: "bandpass", filterFreq: 1250 + releaseStrength * 300, q: 1.0 });
-        if (canTriggerSample("saabDump", time, 0.05)) triggerSample("saabDump", time, { gain: 0.018 * releaseStrength, rate: 0.48 + Math.random() * 0.08, filterType: "lowpass", filterFreq: 1350, q: 0.85 });
+        const voice = releaseVoice(stateRef.current.config, releaseStrength);
+        if (voice.gain > 0) triggerSample(voice.sample, time, voice);
       };
 
       const scheduleCombustion = () => {
         const localCtx = ctxRef.current;
         const localNodes = nodesRef.current;
-        if (!localCtx || !localNodes) return;
+        if (!localCtx || !localNodes || localCtx.state !== 'running') return;
         const s = stateRef.current;
         const localConfig = s.config;
         const targetPoint = s.point;
@@ -639,6 +683,13 @@ export function useEngineAudio(config, point, enabled, throttle) {
         const basePeriod = 1 / eventHz;
         const pattern = getFiringPattern(localConfig.engineLayout, localConfig.v8Crank, localConfig.firingSoundMode);
         const lookAhead = localCtx.currentTime + 0.12;
+        nextFireTimeRef.current = recoverFireTime(nextFireTimeRef.current, localCtx.currentTime);
+        localNodes.master.gain.setTargetAtTime(localConfig.cinemaMode ? 0.74 : 0.60, localCtx.currentTime, 0.08);
+        const blower = blowerVoice(localConfig, localPoint, localThrottle, localCtx.sampleRate);
+        localNodes.blowerOsc.frequency.setTargetAtTime(blower.frequency, localCtx.currentTime, 0.06);
+        localNodes.blowerHarmonic.frequency.setTargetAtTime(blower.frequency * 2, localCtx.currentTime, 0.06);
+        localNodes.blowerGain.gain.setTargetAtTime(blower.gain * getMicProfile(localConfig.micPosition).air, localCtx.currentTime, 0.06);
+        localNodes.blowerHarmonicGain.gain.setTargetAtTime(blower.harmonicGain * getMicProfile(localConfig.micPosition).air, localCtx.currentTime, 0.06);
         const load = clamp((localPoint.mapKpa - 30) / 170, 0, 1);
         const throttleAudio = clamp(localThrottle, 0, 1);
         const activeAudio = clamp(Math.max(throttleAudio, load * 0.65), 0, 1);
@@ -737,6 +788,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
           exhaustGain.gain.exponentialRampToValueAtTime(combustionAmp * mic.exhaust * (oldMuscleV8 ? 1.18 : (localConfig.engineLayout === "i4" || localConfig.engineLayout === "flat4") ? (i4Subtype === "boxerTurboFlat4" ? 1.22 : i4Subtype === "saabTurboI4" ? 1.12 : i4Subtype === "dieselI4" ? 1.18 : i4Subtype === "hotHatchNaI4" || i4Subtype === "driftTurboI4" ? 1.04 : 1) : 1), fireTime + 0.003);
           exhaustGain.gain.exponentialRampToValueAtTime(0.0001, fireTime + combustionTail);
           combustionNoise.connect(exhaustGain).connect(localNodes.exhaustRes.input);
+          trackVoice(combustionNoise, exhaustGain);
           combustionNoise.start(fireTime);
           combustionNoise.stop(fireTime + combustionTail + 0.012);
 
@@ -750,6 +802,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
             thumpGain.gain.exponentialRampToValueAtTime(profile.thumpGain * mic.exhaust * layoutWeight, fireTime + 0.003);
             thumpGain.gain.exponentialRampToValueAtTime(0.0001, fireTime + (oldMuscleV8 ? 0.090 : 0.05));
             thump.connect(thumpGain).connect(localNodes.exhaustRes.input);
+            trackVoice(thump, thumpGain);
             thump.start(fireTime);
             thump.stop(fireTime + (oldMuscleV8 ? 0.100 : 0.055));
           }
@@ -766,6 +819,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
             intakeGain.gain.exponentialRampToValueAtTime((0.002 + (throttleAudio - 0.18) * 0.018 + (profile.intakeBias || 0) * 0.006) * mic.intake, fireTime + 0.004);
             intakeGain.gain.exponentialRampToValueAtTime(0.0001, fireTime + 0.028);
             intakeBurst.connect(intakeFilter).connect(intakeGain).connect(localNodes.intakeRes.input);
+            trackVoice(intakeBurst, intakeFilter, intakeGain);
             intakeBurst.start(fireTime, Math.random() * 0.4, 0.04);
             intakeBurst.stop(fireTime + 0.04);
           }
@@ -781,6 +835,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
           mechGain.gain.exponentialRampToValueAtTime((throttleAudio > 0.15 ? 0.0008 + (profile.mechanicalGain || 0.02) * 0.08 + profileTopTick * 0.002 : 0.0001) * mic.block, fireTime + 0.002);
           mechGain.gain.exponentialRampToValueAtTime(0.0001, fireTime + 0.016);
           mechTick.connect(mechFilter).connect(mechGain).connect(localNodes.blockRes.input);
+          trackVoice(mechTick, mechFilter, mechGain);
           mechTick.start(fireTime, Math.random() * 0.3, 0.025);
           mechTick.stop(fireTime + 0.025);
 
@@ -832,6 +887,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
           gain.gain.exponentialRampToValueAtTime(0.016 * (0.5 + throttleRise), localCtx.currentTime + 0.01);
           gain.gain.exponentialRampToValueAtTime(0.0001, localCtx.currentTime + 0.08);
           stab.connect(filter).connect(gain).connect(localNodes.fxBus);
+          trackVoice(stab, filter, gain);
           stab.start(localCtx.currentTime, Math.random() * 0.2, 0.08);
           stab.stop(localCtx.currentTime + 0.08);
         }
