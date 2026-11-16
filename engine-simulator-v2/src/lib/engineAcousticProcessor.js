@@ -39,11 +39,11 @@ export function acousticProfileFor(config={}) {
   const airCleaner=config.airCleaner==='auto'||!config.airCleaner?(config.intakeType==='itb'?'trumpets':'airbox'):config.airCleaner;
   const intakePipe=finite(config.intakePipeM,.65,.1,2),intakeBore=finite(config.intakeBoreMm,65,30,120),plenum=finite(config.intakePlenumL,disp*.8,.3,plane?40:8);
   const firingPositions=radial||rotary?Array.from({length:cylinders},(_,i)=>config.engineLayout==='radial14'?(i*9)%14:(i*2)%cylinders):null;
-  // Long shared carburettor manifolds: inline cylinders, radial distribution,
-  // or six-cylinder banks. Keep the approved small-bank/rotary source intact.
+  // Aircraft combustion detail extends to rotating cylinders, V banks and the
+  // flat four. The flat twin and W source retain their previous character.
   // These are architecture/geometry rules, never preset names or a recorded voice.
-  const aircraftSource=plane&&!rotary&&(radial||!banked||cylinders/(config.engineLayout==='w12'?3:2)>=6);
-  const aircraftBank=aircraftSource&&banked&&!radial;
+  const aircraftSource=plane&&(radial||rotary||!banked||config.engineLayout.startsWith('v')||config.engineLayout==='flat4');
+  const aircraftBank=aircraftSource&&config.engineLayout.startsWith('v');
   const scatter=aircraftSource?finite(config.soundTexture,.5,0,1)*clamp(.10+plenum/disp*.055+perCylinder*.022,.12,.24):0;
   const profile={plane,rotary,radial,firingPositions,bankCount:config.engineLayout==='w12'?3:2,
     openStubs:plane&&config.planeExhaust!=='collector',sleeve:config.sleeveValves===true,
@@ -75,6 +75,7 @@ export class EngineAcousticModel {
   configure(profile){
     if(this.profile?.id===profile.id)return;
     this.transitionL=this.lastL??0;this.transitionR=this.lastR??0;
+    this.transitionP=this.lastProp??0;
     this.transitionI=this.lastI??0;this.transitionM=this.lastM??0;this.active=0;
     this.profile=profile;this.slot=0;this.phase=0;this.index=0;
     this.slow=new Float64Array(profile.cylinders);this.fast=new Float64Array(profile.cylinders);this.pulseDecay=new Float64Array(profile.cylinders);
@@ -104,6 +105,11 @@ export class EngineAcousticModel {
       this.lastControlThrottle=clamp(message.throttle,0,1);
     }
     this.target={...this.target,...message};
+    if(this.profile.rotary&&this.target.rotaryBlip){
+      // Ignition cut must also cancel queued afterfires. Valve/rotation/propeller
+      // layers continue; releasing the cut restores combustion through blipGain.
+      this.releaseFuel=0;this.afterDelay.fill(0);this.afterEnergy.fill(0);
+    }
   }
   noise(){this.seed=(Math.imul(this.seed,1664525)+1013904223)>>>0;return this.seed/2147483648-1;}
   render(outputs){
@@ -183,7 +189,7 @@ export class EngineAcousticModel {
         if(!p.turbo)this.pulseDecay[cylinder]=Math.exp(-1/(sr*p.pulseMs*.001*(1+this.noise()*(p.aircraftSource?.22:.06)*p.texture)));
         if(p.aircraftSource){
           this.valveDelay[cylinder]=sr*60/Math.max(350,this.rpm)*.65;
-          if(p.injection==='carb'&&this.releaseFuel>.04&&this.afterDelay[cylinder]<=0&&this.noise()+1<this.releaseFuel*.28*p.texture){
+          if(p.injection==='carb'&&!(p.rotary&&t.rotaryBlip)&&this.releaseFuel>.04&&this.afterDelay[cylinder]<=0&&this.noise()+1<this.releaseFuel*.28*p.texture){
             this.afterDelay[cylinder]=sr*(.012+(this.noise()+1)*.018);
             this.afterEnergy[cylinder]=(.2+.4*this.releaseFuel)*volume*this.fuel;
           }
@@ -246,8 +252,9 @@ export class EngineAcousticModel {
       }
       let outputL=this.hpY[0]+(this.hpY[2]??0)*.707,outputR=this.hpY[1]+(this.hpY[2]??0)*.707;
       if(p.aircraftBank){
-        // Six exhaust pulses per two crank revolutions at each V12 bank:
-        // N/20 Hz, not an F1-style high-speed surrogate. Retain bank identity.
+        // Retain the low exhaust-bank order at actual engine RPM. V12s have
+        // six pulses per bank per two revolutions (N/20 Hz); smaller V engines
+        // keep their own count and existing flat-/cross-plane bank sequence.
         for(let b=0;b<2;b++)this.bankBody[b]+=(this.hpY[b]-this.bankBody[b])*bodyLp;
         outputL+=this.bankBody[0]*.45;outputR+=this.bankBody[1]*.45;
         // Approximate off-axis observer: the far bank arrives through a longer
@@ -293,11 +300,11 @@ export class EngineAcousticModel {
           if(this.valveDelay[c]>0){this.valveDelay[c]--;if(this.valveDelay[c]<=0)this.valveEnvelope[c]=.7+.3*this.noise();}
           this.valveEnvelope[c]*=valveDecay;strikes+=this.valveEnvelope[c];
         }
-        const impact=air*strikes/Math.sqrt(p.cylinders)*(p.sleeve?.08:1);
+        const impact=air*strikes/Math.sqrt(p.cylinders)*(p.sleeve?.08:1)*(p.rotary?Math.sqrt(p.valves/2):1);
         const ring=(1-valveB)*impact+valveA*this.valveRing1-valveB*this.valveRing2;
         this.valveRing2=this.valveRing1;this.valveRing1=ring;
         this.gearNoise+=(air-this.gearNoise)*gearLp;
-        const exposure=p.radial?1.8:p.valvetrain==='ohv'?1.1:.65;
+        const exposure=p.radial||p.rotary?1.8:p.valvetrain==='ohv'?1.1:.65;
         aircraftMechanical=(impact*.019+ring*.045)*exposure*(.5+.5*p.texture);
         // A quiet gear mesh with broadband tooth contact, not a pure siren.
         drive=drive*.22+this.gearNoise*(p.camDrive==='gear'?.003:0);
@@ -315,7 +322,11 @@ export class EngineAcousticModel {
         const blade=Math.sin(2*Math.PI*this.propPhase)+.3*Math.sin(4*Math.PI*this.propPhase);
         propSound=(blade*.055+this.propNoiseLow*(.025+.13*clamp((tipMach-.6)/.4,0,1)))*fraction*fraction*loading*p.propLevel*this.active;
       }
-      if(propeller)propeller[i]=propSound;else intake[i]+=propSound;
+      this.transitionP*=transitionDecay;
+      // With the older four-channel API the intake transition already contains
+      // its propeller contribution. Only the separate output needs this tail.
+      if(propeller)propeller[i]=propSound+this.transitionP;else intake[i]+=propSound;
+      this.lastProp=propeller?propeller[i]:propSound;
       const tail=transitionDecay;
       this.transitionL*=tail;this.transitionR*=tail;this.transitionI*=tail;this.transitionM*=tail;
       exhaust[i]+=this.transitionL;if(right)right[i]+=this.transitionR;

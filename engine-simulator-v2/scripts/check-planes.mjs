@@ -42,8 +42,8 @@ assert.notDeepEqual(render({...plane,planeExhaust:'stubs'}).data[0],render({...p
 const w=m.configForPreset(m.planePresets.find(p=>p.category==='W'));assert.equal(acousticProfileFor(w).bankCount,3);assert.ok(acousticProfileFor(w).banks.includes(2));
 const silent=new EngineAcousticModel();silent.render(Array.from({length:4},()=>new Float32Array(128)));
 const {OfflineAudioContext,AudioWorkletNode}=await import('node-web-audio-api');
-for(const sr of [32000,48000,96000])for(const layout of ['flat2','radial5','radial7','radial9','radial14','rotary9','w12','i4','i6','v12']){
- const c=m.configForPreset(m.planePresets.find(p=>p.config.engineLayout===layout));
+for(const sr of [32000,48000,96000])for(const layout of ['flat2','radial5','radial7','radial9','radial14','rotary9','w12','i4','i6','v12','flat4','v4','v8']){
+ const c={...m.configForPreset(m.planePresets.find(p=>p.config.engineLayout===(layout==='v4'?'v8':layout))),engineLayout:layout};
  const ctx=new OfflineAudioContext(2,sr/2,sr);await ctx.audioWorklet.addModule(new URL('../src/lib/engineAcousticProcessor.js',import.meta.url).pathname);
  const node=new AudioWorkletNode(ctx,'apex-engine-acoustics',{numberOfInputs:0,numberOfOutputs:4,outputChannelCount:[2,1,1,1]});
  const ready=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('worklet timeout')),5000);node.port.onmessage=e=>{if(e.data.type==='ready'){clearTimeout(timer);resolve();}};});
@@ -51,5 +51,5 @@ for(const sr of [32000,48000,96000])for(const layout of ['flat2','radial5','radi
  node.port.postMessage({components:acousticProfileFor(c),active:true,rpm:c.planeRatedRpm,throttle:.8,load:.9});await new Promise(r=>setTimeout(r,15));
  const result=await ctx.startRendering();assert.ok(rms(result.getChannelData(0))>.001);assert.equal(errors.length,0);node.disconnect();node.port.close();
 }
-console.log('PASS: 20 planes; 30 native four-output worklet renders; 240 cars retained. No recorded-sound or flight-dynamics accuracy is claimed.');
+console.log('PASS: 20 planes; 39 native four-output worklet renders; 240 cars retained. No recorded-sound or flight-dynamics accuracy is claimed.');
 fs.unlinkSync(out);

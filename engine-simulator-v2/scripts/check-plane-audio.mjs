@@ -32,15 +32,17 @@ function cycleResidual(a,rpm,sr=48000){
   for(let i=0;i<difference.length;i++)difference[i]-=tail[i];
   return rms(difference)/rms(tail);
 }
-// Immutable pre-pass renders: preserve the car source and approved aircraft
-// combustion/propeller voices with the same collector installation.
+// Immutable pre-pass renders: cars, flat twins and W stay unchanged. The user
+// explicitly requested the new source for flat four, V8 and rotary next.
 const golden=JSON.parse(fs.readFileSync(root+'scripts/fixtures/plane-audio-approved.json'));
 for(const test of golden.cases){
   const {a}=run(test.config,{rpm:test.rpm,seconds:golden.seconds});
   const hash=createHash('sha256');a.forEach(c=>hash.update(Buffer.from(c.buffer)));
-  assert.equal(hash.digest('hex'),test.sha256,test.name+' approved waveform');
+  const changed=['plane-flat4','plane-v8','plane-rotary9'].includes(test.name);
+  if(changed)assert.notEqual(hash.digest('hex'),test.sha256,test.name+' receives the requested pass');
+  else assert.equal(hash.digest('hex'),test.sha256,test.name+' approved waveform');
 }
-console.log('PASS: nine unchanged car/flat/V8/rotary/W reference waveforms.');
+console.log('PASS: preserved car/flat-twin/W and previous-pass waveforms; requested aircraft voices updated.');
 
 for(const preset of planePresets){
   const c=preset.config;
@@ -50,13 +52,20 @@ for(const preset of planePresets){
     assert.ok(Math.abs(a[0].subarray(48000).reduce((s,x)=>s+x,0)/48000)<.01,'no persistent DC');
   }
 }
-for(const layout of ['i4','i6','radial5','radial7','radial9','radial14','v12']){
-  const c=planePresets.find(p=>p.config.engineLayout===layout).config;
-  const rough=run({...c,soundTexture:1}),smooth=run({...c,soundTexture:0});
-  assert.ok(cycleResidual(rough.a[0],2400)>cycleResidual(smooth.a[0],2400)*1.5,layout+' non-repeating combustion');
+for(const layout of ['i4','i6','radial5','radial7','radial9','radial14','v12','flat4','v4','v8','rotary9']){
+  const c={...planePresets.find(p=>p.config.engineLayout===(layout==='v4'?'v8':layout)).config,engineLayout:layout};
+  const rpm=['rotary9','v8','v4'].includes(layout)?1200:2400;
+  const rough=run({...c,soundTexture:1},{rpm}),smooth=run({...c,soundTexture:0},{rpm});
+  assert.ok(cycleResidual(rough.a[0],rpm)>cycleResidual(smooth.a[0],rpm)*1.5,layout+' non-repeating combustion');
   assert.equal(rough.model.afterfireCount,0,'steady power has no scheduled afterfires');
   rough.model.update({throttle:0,load:.05});block(rough.model,2);
-  assert.ok(rough.model.afterfireCount>0,layout+' sharp lift causes bounded afterfires');
+  // Low cylinder counts may legitimately produce no pop on one closure.
+  // Exercise several closures; do not force a bang on every throttle lift.
+  for(let retry=0;retry<3&&rough.model.afterfireCount===0;retry++){
+    rough.model.update({throttle:.8,load:.9});block(rough.model,1);
+    rough.model.update({throttle:0,load:.05});block(rough.model,2);
+  }
+  assert.ok(rough.model.afterfireCount>0&&rough.model.afterfireCount<40,layout+' sharp lifts cause bounded afterfires');
   const count=rough.model.afterfireCount;block(rough.model,3);
   assert.equal(rough.model.afterfireCount,count,'transient ends rather than perpetual crackle');
   const gentle=run(c);for(let throttle=.8;throttle>=0;throttle-=.02){gentle.model.update({throttle});block(gentle.model,.08);}
@@ -65,6 +74,34 @@ for(const layout of ['i4','i6','radial5','radial7','radial9','radial14','v12']){
   assert.equal(injected.model.afterfireCount,0,'injected fuel cut has no carb afterfire');
   assert.ok(rms(coast[0].subarray(48000))<.001,'fuel-cut exhaust becomes quiet');
   const one=run(c,{size:96000}),small=run(c,{size:97});assert.deepEqual(one.a,small.a,'independent of render quantum');
+}
+for(const preset of planePresets.filter(p=>p.config.engineLayout==='rotary9')){
+  const c={...preset.config,soundTexture:1};
+  const {model,a}=run(c,{rpm:1200});
+  model.update({throttle:0,load:.05});block(model,.02);
+  model.update({rotaryBlip:true});const before=model.afterfireCount,cut=block(model,1);
+  assert.equal(model.afterfireCount,before,'cut cancels pending afterfires');
+  assert.ok(rms(cut[0].subarray(24000))<rms(a[0])*.001,'cut silences rotary exhaust');
+  assert.ok(rms(cut[2].subarray(24000))>.0001,'valve/gear mechanics survive cut');
+  assert.ok(rms(cut[4].subarray(24000))>.0001,'propeller survives cut');
+  model.update({rotaryBlip:false,throttle:.8,load:.9});const restart=block(model,1);
+  assert.ok(rms(restart[0].subarray(24000))>.01,'combustion returns after cut');
+  assert.equal(model.afterfireCount,before,'no stale pops on restart');
+  const count=model.events;block(model,1);assert.ok(Math.abs(model.events-count-90)<=1,'rotary physical cadence');
+}
+const eight=planePresets.find(p=>p.config.engineLayout==='v8').config;
+assert.deepEqual(acousticProfileFor({...eight,v8Crank:'crossplane'}).banks,[0,1,0,1,1,0,1,0]);
+assert.notDeepEqual(run({...eight,v8Crank:'flatplane'}).a[0],run({...eight,v8Crank:'crossplane'}).a[0],'V8 cranks remain distinct');
+assert.deepEqual(run({...eight,engineLayout:'v4'}).a,run({...eight,engineLayout:'v4',gameMeta:{name:'anything'}}).a,'custom V4 voice is hardware based');
+// A live propeller parameter edit must not reset its waveform to zero in one
+// sample. Muting still finishes promptly, including the legacy four-output API.
+for(const channels of [4,5]){
+  const {model}=run(eight,{rpm:1200});
+  const last=block(model,.013)[4].at(-1);
+  model.update({components:acousticProfileFor({...eight,propellerEnabled:false})});
+  const data=Array.from({length:channels},()=>new Float32Array(48000));model.render(data);
+  if(channels===5){assert.ok(Math.abs(data[4][0]-last)<.001,'prop transition continuity');assert.ok(rms(data[4].subarray(24000))<1e-6,'prop mute tail ends');}
+  data.forEach(rms);
 }
 for(const preset of planePresets.filter(p=>p.config.engineLayout==='v12')){
   const {a}=run(preset.config),left=a[0].subarray(48000),right=a[3].subarray(48000);

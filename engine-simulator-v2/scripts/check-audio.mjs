@@ -63,10 +63,10 @@ await renderHook(base,p,.8,false);await renderHook(base,p,.8,true);clock+=.1;tim
 // Exercise the production hook's worklet construction and all four bus connections.
 // Native processor-only tests cannot catch a missing bus on nodesRef.current.
 window.AudioWorkletNode=function(_context,name,options){return new AudioWorkletNode(native,name,options);};
-for(const layout of ['i4','radial9','radial14','v12']){
+for(const layout of ['i4','radial9','radial14','v12','flat4','v4','v8','rotary9']){
 reset();
-const preset=m.planePresets.find(p=>p.config.engineLayout===layout);
-const aircraftConfig={...base,...preset.config,engineLoudness:2,propellerLoudness:1.5,superchargerLoudness:1.8,roomSize:1};
+const preset=m.planePresets.find(p=>p.config.engineLayout===(layout==='v4'?'v8':layout));
+const aircraftConfig={...base,...preset.config,engineLayout:layout,engineLoudness:2,propellerLoudness:1.5,superchargerLoudness:1.8,roomSize:1};
 await renderHook(aircraftConfig, {...p,rpm:aircraftConfig.redline},1);
 let acoustic;
 for(let i=0;i<200;i++){acoustic=refs.find(ref=>ref.current?.acousticNode)?.current;if(acoustic)break;await new Promise(resolve=>setTimeout(resolve,10));}
@@ -78,7 +78,7 @@ assert.ok(aircraftPeak>.001&&aircraftPeak<.98,'production aircraft mix has headr
 acoustic.acousticNode.port.close();console.log(layout+' production aircraft worklet: peak '+aircraftPeak.toFixed(4));
 }
 delete window.AudioWorkletNode;
-console.log('PASS: four production aircraft hooks, native worklets and four output buses.');
+console.log('PASS: eight production aircraft hooks, native worklets and four output buses.');
 console.log('PASS: throttle blends, blower controls, valve choices, stall recovery, restart race and eight actual offline renders. This does not assess subjective sound quality.');fs.unlinkSync(out);
 
 
