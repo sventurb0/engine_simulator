@@ -38,11 +38,11 @@ for(const preset of m.planePresets){
 const plane=m.configForPreset(m.planePresets[8]);
 assert.notDeepEqual(render(plane).data[4],render({...plane,propellerBlades:3}).data[4]);
 assert.notDeepEqual(render(plane).data[4],render({...plane,propellerRatio:.8}).data[4]);
-assert.notDeepEqual(render(plane).data[0],render({...plane,planeExhaust:'collector'}).data[0]);
+assert.notDeepEqual(render({...plane,planeExhaust:'stubs'}).data[0],render({...plane,planeExhaust:'collector'}).data[0]);
 const w=m.configForPreset(m.planePresets.find(p=>p.category==='W'));assert.equal(acousticProfileFor(w).bankCount,3);assert.ok(acousticProfileFor(w).banks.includes(2));
 const silent=new EngineAcousticModel();silent.render(Array.from({length:4},()=>new Float32Array(128)));
 const {OfflineAudioContext,AudioWorkletNode}=await import('node-web-audio-api');
-for(const sr of [32000,48000,96000])for(const layout of ['flat2','radial5','radial7','radial9','radial14','rotary9','w12']){
+for(const sr of [32000,48000,96000])for(const layout of ['flat2','radial5','radial7','radial9','radial14','rotary9','w12','i4','i6','v12']){
  const c=m.configForPreset(m.planePresets.find(p=>p.config.engineLayout===layout));
  const ctx=new OfflineAudioContext(2,sr/2,sr);await ctx.audioWorklet.addModule(new URL('../src/lib/engineAcousticProcessor.js',import.meta.url).pathname);
  const node=new AudioWorkletNode(ctx,'apex-engine-acoustics',{numberOfInputs:0,numberOfOutputs:4,outputChannelCount:[2,1,1,1]});
@@ -51,5 +51,5 @@ for(const sr of [32000,48000,96000])for(const layout of ['flat2','radial5','radi
  node.port.postMessage({components:acousticProfileFor(c),active:true,rpm:c.planeRatedRpm,throttle:.8,load:.9});await new Promise(r=>setTimeout(r,15));
  const result=await ctx.startRendering();assert.ok(rms(result.getChannelData(0))>.001);assert.equal(errors.length,0);node.disconnect();node.port.close();
 }
-console.log('PASS: 20 planes; 21 native four-output worklet renders; 240 cars retained. No recorded-sound or flight-dynamics accuracy is claimed.');
+console.log('PASS: 20 planes; 30 native four-output worklet renders; 240 cars retained. No recorded-sound or flight-dynamics accuracy is claimed.');
 fs.unlinkSync(out);

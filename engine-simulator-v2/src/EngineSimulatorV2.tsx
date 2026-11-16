@@ -2,7 +2,7 @@ import { engineCalibrations, calibrationById, calibrationForPreset, calibrationF
 import { compressorMaps, mapEfficiency, correctedFlow, type CompressorMapKey } from "./data/compressorMaps";
 import { WATTS_PER_HP, NM_PER_LBFT, PA_PER_PSI, KG_S_TO_LB_MIN, powerHpFromTorque, torqueFromPowerHp, bmepPsiFromTorque, fuelProperties, mixtureEfficiency, ignitionEfficiency, injectorCcFromFuel, angularAccelerationRpmS, throttleAfterStep } from "./lib/powertrainMath";
 import { expandFactoryPresets, manufacturerReferences } from "./data/factoryEngines";
-import { planePresets } from "./data/planeEngines";
+import { planePresets, planeAudioReferences } from "./data/planeEngines";
 import { documentedAcoustics } from "./data/documentedAcoustics";
 import { acousticProfileFor } from "./lib/engineAcousticProcessor.js";
 import { useEngineAudio, createProceduralSampleBuffer } from "./lib/engineAudio.js";
@@ -590,7 +590,7 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     propellerLoudness: Number.isFinite(config.propellerLoudness)?clamp(config.propellerLoudness!,0,1.5):.6,
     rotaryBlip: config.applicationType==='plane'&&config.rotaryBlip===true,
     sleeveValves: config.sleeveValves===true,
-    planeExhaust: config.planeExhaust==='collector'?'collector':'stubs',
+    planeExhaust: coerceOption(config.planeExhaust,["stubs","collector"] as const,config.applicationType==='plane'?'collector':'stubs'),
     audioModel: config.audioModel === "legacy" ? "legacy" : "acoustic",
     airCleaner: coerceOption(config.airCleaner,["auto","airbox","open_filter","trumpets"] as const,"auto"),
     carbSecondary: coerceOption(config.carbSecondary,["progressive","synchronous"] as const,"progressive"),
@@ -1607,6 +1607,7 @@ export default function EngineSimulatorV2() {
             <CardContent className="min-h-0 grid gap-4 overflow-y-auto !pt-4 lg:max-h-[calc(100vh-20rem)]">
               {tab==='planes' && <div className="grid gap-4">
                 <div><h3 className="font-semibold text-sky-300">Planes · interwar engine collection</h3><p className="mt-2 text-xs text-slate-400">20 fictional game engines based on real produced designs. Includes older surplus engines. Audio and curves are procedural estimates; propellers are illustrative installations, not aircraft flight models.</p></div>
+                <details className="rounded-xl border border-sky-900 bg-sky-950/30 p-3"><summary className="cursor-pointer text-sm font-medium text-sky-300">Real engine sound references</summary><p className="my-2 text-xs text-slate-400">Compare exhaust bark, idle unevenness and mechanical noise across real installations. These references guide the synthesis; they are not exact sound matches for every engine.</p><div className="grid gap-3">{planeAudioReferences.map(r=><div key={r.url}><a className="text-sm text-sky-300 underline" href={r.url} target="_blank" rel="noreferrer">{r.title}</a><p className="mt-1 text-xs text-slate-400">{r.note}</p></div>)}</div></details>
                 <input aria-label="Find a plane engine" placeholder="Search engine, historical reference or layout…" className={UI.select} value={planeSearch} onChange={e=>setPlaneSearch(e.target.value)}/>
                 {['Inline','Flat','Radial','V','Rotary','W'].map(category=>{const entries=planePresets.filter(p=>p.category===category&&`${p.name} ${p.referenceName} ${p.category}`.toLowerCase().includes(planeSearch.toLowerCase()));return entries.length?<details open key={category} className="rounded-xl border border-slate-700 p-3"><summary className="cursor-pointer font-medium">{category} · {entries.length}</summary><div className="mt-2 grid gap-2">{entries.map(p=><button key={p.name} aria-pressed={config.gameMeta?.name===p.name} onClick={()=>applyPreset(p)} className={`rounded-lg border p-3 text-left ${config.gameMeta?.name===p.name?'border-sky-400 bg-sky-950':'border-slate-700 bg-slate-900'}`}><span className="block text-sm font-semibold">{p.name}</span><span className="block text-xs text-slate-400">{p.referenceName} · {p.era}<br/>{engineLayouts[p.config.engineLayout!].label} · {p.nominalLitres?.toFixed(1)} L · {p.referenceHp} hp reference</span></button>)}</div></details>:null;})}
                 {selectedPreset?.group==='plane' && <div className="rounded-xl border border-sky-800 p-3 text-xs text-slate-300"><strong>{selectedPreset.referenceName}</strong><p className="my-2">{selectedPreset.evidence}</p><p>Reference: {selectedPreset.referenceHp} hp at {selectedPreset.referenceRpm} RPM; rating altitude {selectedPreset.ratingAltitudeM??0} m. The curve is normalised at this point; other RPMs remain inferred. Full throttle on a bench does not validate propeller thrust or flight performance.</p><a className="block mt-2 text-sky-300 underline" href={selectedPreset.source} target="_blank" rel="noreferrer">Historical reference</a></div>}

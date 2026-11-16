@@ -1,0 +1,140 @@
+{
+  "sourceCommit": "1f8a64cd66daff818e61dc3b6bfa32db38ac78d9",
+  "sampleRate": 48000,
+  "seconds": 1,
+  "cases": [
+    {
+      "name": "car-i4",
+      "config": {
+        "engineLayout": "i4",
+        "bore": 86,
+        "stroke": 86,
+        "induction": "na",
+        "redline": 6500
+      },
+      "rpm": 3200,
+      "sha256": "acfeb747e245ecd028572242d451bdb73b1fd0668aae37f32034487a803b363f"
+    },
+    {
+      "name": "car-v8",
+      "config": {
+        "engineLayout": "v8",
+        "bore": 86,
+        "stroke": 86,
+        "induction": "na",
+        "redline": 6500
+      },
+      "rpm": 3200,
+      "sha256": "ddce7702385296e5ee255dfa5de58eac9e8b22857be261a9ad3e4503575fe2ba"
+    },
+    {
+      "name": "car-v12",
+      "config": {
+        "engineLayout": "v12",
+        "bore": 86,
+        "stroke": 86,
+        "induction": "na",
+        "redline": 6500
+      },
+      "rpm": 3200,
+      "sha256": "1cb5943070d57ddeb9968507b0afaae9548de75c1d01abf8224011aadd2c0d0d"
+    },
+    {
+      "name": "car-i4-turbo",
+      "config": {
+        "engineLayout": "i4",
+        "bore": 90,
+        "stroke": 90,
+        "induction": "turbo",
+        "redline": 6200
+      },
+      "rpm": 3200,
+      "sha256": "fd16119228007f310d8d659d6f940f46230e428b3235e1f4ca3e174f6467b197"
+    },
+    {
+      "name": "plane-flat2",
+      "config": {
+        "applicationType": "plane",
+        "engineLayout": "flat2",
+        "bore": 110,
+        "stroke": 130,
+        "redline": 2000,
+        "injectionType": "carb",
+        "camDrive": "gear",
+        "planeExhaust": "collector",
+        "soundTexture": 0.5,
+        "propellerEnabled": true
+      },
+      "rpm": 1600,
+      "sha256": "2c71ef8ae0b86a67f487d3ff2f1bd5e68e525c0e6ef3d6016f44a951c8f6e3af"
+    },
+    {
+      "name": "plane-flat4",
+      "config": {
+        "applicationType": "plane",
+        "engineLayout": "flat4",
+        "bore": 110,
+        "stroke": 130,
+        "redline": 2000,
+        "injectionType": "carb",
+        "camDrive": "gear",
+        "planeExhaust": "collector",
+        "soundTexture": 0.5,
+        "propellerEnabled": true
+      },
+      "rpm": 1600,
+      "sha256": "55fd3feb466402106f4d4040cd7560e68a1014038f70ff26468c3c7477b1e611"
+    },
+    {
+      "name": "plane-v8",
+      "config": {
+        "applicationType": "plane",
+        "engineLayout": "v8",
+        "bore": 110,
+        "stroke": 130,
+        "redline": 2000,
+        "injectionType": "carb",
+        "camDrive": "gear",
+        "planeExhaust": "collector",
+        "soundTexture": 0.5,
+        "propellerEnabled": true
+      },
+      "rpm": 1600,
+      "sha256": "026e766782da1be11c5906c4ae1b7cae10b1b311870e0624d5a0dbfe1c3f7cbe"
+    },
+    {
+      "name": "plane-w12",
+      "config": {
+        "applicationType": "plane",
+        "engineLayout": "w12",
+        "bore": 110,
+        "stroke": 130,
+        "redline": 2000,
+        "injectionType": "carb",
+        "camDrive": "gear",
+        "planeExhaust": "collector",
+        "soundTexture": 0.5,
+        "propellerEnabled": true
+      },
+      "rpm": 1600,
+      "sha256": "2494169b7a67ce7329fee0b18d544117761dd6dd3d5ef6f535caa3e3e2eec7de"
+    },
+    {
+      "name": "plane-rotary9",
+      "config": {
+        "applicationType": "plane",
+        "engineLayout": "rotary9",
+        "bore": 110,
+        "stroke": 130,
+        "redline": 2000,
+        "injectionType": "carb",
+        "camDrive": "gear",
+        "planeExhaust": "collector",
+        "soundTexture": 0.5,
+        "propellerEnabled": true
+      },
+      "rpm": 1600,
+      "sha256": "107d11c030107a79b9565e0d361473049547acd63fd2799f62893c122099a632"
+    }
+  ]
+}

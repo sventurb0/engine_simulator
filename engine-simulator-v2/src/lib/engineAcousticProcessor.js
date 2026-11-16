@@ -39,16 +39,24 @@ export function acousticProfileFor(config={}) {
   const airCleaner=config.airCleaner==='auto'||!config.airCleaner?(config.intakeType==='itb'?'trumpets':'airbox'):config.airCleaner;
   const intakePipe=finite(config.intakePipeM,.65,.1,2),intakeBore=finite(config.intakeBoreMm,65,30,120),plenum=finite(config.intakePlenumL,disp*.8,.3,plane?40:8);
   const firingPositions=radial||rotary?Array.from({length:cylinders},(_,i)=>config.engineLayout==='radial14'?(i*9)%14:(i*2)%cylinders):null;
+  // Long shared carburettor manifolds: inline cylinders, radial distribution,
+  // or six-cylinder banks. Keep the approved small-bank/rotary source intact.
+  // These are architecture/geometry rules, never preset names or a recorded voice.
+  const aircraftSource=plane&&!rotary&&(radial||!banked||cylinders/(config.engineLayout==='w12'?3:2)>=6);
+  const aircraftBank=aircraftSource&&banked&&!radial;
+  const scatter=aircraftSource?finite(config.soundTexture,.5,0,1)*clamp(.10+plenum/disp*.055+perCylinder*.022,.12,.24):0;
   const profile={plane,rotary,radial,firingPositions,bankCount:config.engineLayout==='w12'?3:2,
     openStubs:plane&&config.planeExhaust!=='collector',sleeve:config.sleeveValves===true,
     propeller:plane&&config.propellerEnabled!==false,propBlades:Math.round(finite(config.propellerBlades,2,2,4)),
     propDiameter:finite(config.propellerDiameterM,2,.8,4.5),propRatio:finite(config.propellerRatio,1,.25,1),propLevel:finite(config.propellerLoudness,.6,0,1.5),
-    valveTiming,intakePipe,intakeBore,plenum,
+    valveTiming,intakePipe,intakeBore,plenum,aircraftSource,aircraftBank,scatter,
+    bankPathM:aircraftBank?finite(config.bore,120,40,250)*.0036:0,
     silencerCount:Math.round(finite(config.silencerCount,0,0,2)),silencerVolume:finite(config.silencerVolumeL,8,1,25),
     vtcAdvance:finite(config.intakeCamAdvanceDeg,0,0,40),vtcMode:config.acousticVtcMode??'off',
     cylinders,banks,banked,layout:config.engineLayout,crossplane,
-    runners:Array.from({length:cylinders},(_,i)=>runner*variations[i%4]),collector,tailpipe,cutoff,
-    pulseMs:clamp(valveTiming?(2.6+perCylinder*4.5)/(1+.7*valveTiming.exhaustLift/12)*(240/valveTiming.exhaustDuration):(2.6+perCylinder*4.5)/(1+.7*cam*(valves/4)),1.5,9),turbo,induction:config.induction??'na',
+    runners:Array.from({length:cylinders},(_,i)=>runner*variations[i%4]),collector,tailpipe,
+    cutoff:aircraftSource?cutoff*clamp((.65/perCylinder)**.22,.55,1):cutoff,
+    pulseMs:clamp(valveTiming?(2.6+perCylinder*4.5)/(1+.7*valveTiming.exhaustLift/12)*(240/valveTiming.exhaustDuration):(2.6+perCylinder*4.5)/(1+.7*cam*(valves/4)),1.5,aircraftSource?16:9),turbo,induction:config.induction??'na',
     displacementL:disp,perCylinderL:perCylinder,compression:finite(config.compressionRatio,10,plane?3.5:6,16),
     cam,overlap,idleOverlap:config.camOverlapDeg!==undefined?overlap:valveTiming?valveTiming.effectiveOverlap:overlap*(config.liftSystem&&config.liftSystem!=='none'?.18:config.vvtMode==='dual'?.35:config.vvtMode==='intake'?.6:1),redline:finite(config.redline,6600,plane?800:3000,18000),flywheel:finite(config.flywheelInertiaKgM2,.18,.04,1),
     idle:finite(config.acousticIdleRpm,config.engineLayout==='v8'?(crossplane?650:860):800,plane?350:500,1600),
@@ -70,14 +78,33 @@ export class EngineAcousticModel {
     this.transitionI=this.lastI??0;this.transitionM=this.lastM??0;this.active=0;
     this.profile=profile;this.slot=0;this.phase=0;this.index=0;
     this.slow=new Float64Array(profile.cylinders);this.fast=new Float64Array(profile.cylinders);this.pulseDecay=new Float64Array(profile.cylinders);
+    this.flowNoise=new Float64Array(profile.cylinders);
+    this.cylinderMixture=new Float64Array(profile.cylinders);
+    this.afterDelay=new Float64Array(profile.cylinders);this.afterEnergy=new Float64Array(profile.cylinders);
+    this.valveEnvelope=new Float64Array(profile.cylinders);this.valveDelay=new Float64Array(profile.cylinders);
+    this.valveRing1=0;this.valveRing2=0;this.gearNoise=0;this.shaftDrift=0;
+    this.lastControlThrottle=0;this.releaseFuel=0;this.afterfireCount=0;
+    this.bankBody=Array(profile.bankCount).fill(0);
+    this.cylinderTrim=Array.from({length:profile.cylinders},(_,c)=>1+profile.scatter*.6*Math.sin((c+1)*2.3999632297));
     this.bufferSize=Math.max(4096,2**Math.ceil(Math.log2(this.sr*.05)));
     this.lines=Array.from({length:profile.cylinders},()=>new Float32Array(this.bufferSize));
     this.collectors=Array.from({length:profile.bankCount},()=>new Float32Array(this.bufferSize));
+    this.farBankLine=new Float32Array(this.bufferSize);
     this.propPhase=0;this.rotorPhase=0;this.propNoiseLow=0;this.blipGain=1;this.propRpm=0;this.bladeHz=0;
     this.vtc=0;this.resonatorX1=0;this.resonatorX2=0;this.resonatorY1=0;this.resonatorY2=0;this.silencerLow=Array.from({length:profile.bankCount},()=>[0,0]);this.silencerLines=Array.from({length:profile.bankCount*2},()=>new Float32Array(this.bufferSize));
     this.crossoverLow=0;this.low=Array(profile.bankCount).fill(0);this.hpX=Array(profile.bankCount).fill(0);this.hpY=Array(profile.bankCount).fill(0);this.intakeLow=0;this.intakeHigh=0;this.mechLow=0;
   }
-  update(message){if(message.components?.id)this.configure(message.components);this.target={...this.target,...message};}
+  update(message){
+    if(message.components?.id)this.configure(message.components);
+    if(this.profile.aircraftSource&&this.profile.injection==='carb'&&Number.isFinite(message.throttle)){
+      // Stored manifold fuel gives a brief over-rich exhaust on a sharp lift.
+      // No random bangs at steady power, no imported recordings, no power boost.
+      const drop=this.lastControlThrottle-clamp(message.throttle,0,1);
+      if(drop>.18&&this.rpm>this.profile.idle*1.4)this.releaseFuel=clamp(this.releaseFuel+drop,0,1);
+      this.lastControlThrottle=clamp(message.throttle,0,1);
+    }
+    this.target={...this.target,...message};
+  }
   noise(){this.seed=(Math.imul(this.seed,1664525)+1013904223)>>>0;return this.seed/2147483648-1;}
   render(outputs){
     const [exhaust,intake,mechanical,right,propeller]=outputs,n=exhaust.length,p=this.profile,sr=this.sr,t=this.target;
@@ -102,6 +129,13 @@ export class EngineAcousticModel {
     const silencerLp=1-Math.exp(-2*Math.PI*(1800/Math.sqrt(p.silencerVolume/8))/sr);
     const injectionGain=p.injection==='direct'?.0035:p.injection==='dual'?.0025:p.injection==='port'?.0009:p.injection==='tbi'?.0013:0;
     const tickDecay=Math.exp(-1/(sr*.0012)),pumpDecay=Math.exp(-1/(sr*.0018));
+    const flowLp=1-Math.exp(-2*Math.PI*(p.aircraftSource?900/Math.sqrt(p.perCylinderL):2400)/sr);
+    const releaseDecay=Math.exp(-1/(sr*.42));
+    const gearLp=1-Math.exp(-2*Math.PI*650/sr);
+    const bodyLp=1-Math.exp(-2*Math.PI*210/sr);
+    const valveDecay=Math.exp(-1/(sr*(p.radial?.004:.002)));
+    const valveRadius=Math.exp(-1/(sr*.0035)),valveB=valveRadius*valveRadius;
+    const valveA=2*valveRadius*Math.cos(2*Math.PI*clamp(1900/Math.sqrt(p.perCylinderL),650,3100)/sr);
     const inertiaScale=clamp(.18/p.flywheel,.3,2.4);
     const overlapFactor=Math.pow(clamp((p.idleOverlap-8)/55,0,1),1.25);
     for(let i=0;i<n;i++){
@@ -119,20 +153,41 @@ export class EngineAcousticModel {
       const vtcTarget=p.vtcMode==='on'?p.vtcAdvance:p.vtcMode==='auto'&&this.rpm>=1050&&this.rpm<=5700&&this.load>.5?p.vtcAdvance:0;
       this.vtc+=(vtcTarget-this.vtc)*smoothing;
       const lope=overlapFactor*idleBlend;
+      const aircraftIdle=p.aircraftSource?clamp(1-(this.rpm-p.idle)/Math.max(200,p.redline*.42),0,1):0;
+      if(p.aircraftSource){
+        this.releaseFuel*=releaseDecay;
+        // Slowly changing mixture balance, rather than a repeating wobble LFO.
+        this.shaftDrift+=(0-this.shaftDrift)/(sr*.18);
+      }
       this.huntPhase=(this.huntPhase+this.rpm/240/sr)%1;
       const hunt=Math.sin(this.huntPhase*2*Math.PI);
       this.rippleRpm=this.rpm*lope*.07*inertiaScale*hunt;
-      const eventRpm=Math.max(0,this.rpm+this.rippleRpm);
+      const eventRpm=Math.max(0,this.rpm+this.rippleRpm+(p.aircraftSource?this.shaftDrift:0));
       const step=eventRpm/120*p.cylinders/sr;
       this.phase+=step;
       if(this.phase>=1){
         this.phase-=1;const cylinder=this.slot;
-        const variation=1+this.noise()*(.015+p.texture*.02+lope*.48)+lope*.30*hunt;
+        let variation=1+this.noise()*(.015+p.texture*.02+lope*.48)+lope*.30*hunt;
+        if(p.aircraftSource){
+          this.cylinderMixture[cylinder]=this.cylinderMixture[cylinder]*.65+this.noise()*.35;
+          variation*=this.cylinderTrim[cylinder]*(1+this.cylinderMixture[cylinder]*p.scatter*(1+aircraftIdle*2));
+          this.shaftDrift+=this.noise()*this.rpm*p.scatter*.012*(.3+aircraftIdle)*inertiaScale;
+          // Occasional soft combustion at idle; never arbitrary missing cylinders
+          // at rated power. Texture=0 disables this illustrative unevenness.
+          if(this.noise()+1<aircraftIdle*p.scatter*.12)variation*=.45;
+        }
         const volume=clamp(Math.sqrt(p.perCylinderL/.55),.65,1.5)*clamp((p.compression/10)**.25,.85,1.18);
         const limiter=!p.plane&&this.rpm>=p.redline-50 && Math.floor(this.events/p.cylinders)%2===0?0:1;
         const amplitude=(.20+this.load*.80)*this.fuel*variation*volume*limiter*this.blipGain;
         this.lastPulseAmplitude=amplitude;
-        if(!p.turbo)this.pulseDecay[cylinder]=Math.exp(-1/(sr*p.pulseMs*.001*(1+this.noise()*.06*p.texture)));
+        if(!p.turbo)this.pulseDecay[cylinder]=Math.exp(-1/(sr*p.pulseMs*.001*(1+this.noise()*(p.aircraftSource?.22:.06)*p.texture)));
+        if(p.aircraftSource){
+          this.valveDelay[cylinder]=sr*60/Math.max(350,this.rpm)*.65;
+          if(p.injection==='carb'&&this.releaseFuel>.04&&this.afterDelay[cylinder]<=0&&this.noise()+1<this.releaseFuel*.28*p.texture){
+            this.afterDelay[cylinder]=sr*(.012+(this.noise()+1)*.018);
+            this.afterEnergy[cylinder]=(.2+.4*this.releaseFuel)*volume*this.fuel;
+          }
+        }
         this.injectorEnv+=this.fuel;
         this.slow[cylinder]+=amplitude;this.fast[cylinder]+=amplitude;
         this.slot=(this.slot+1)%p.cylinders;this.events++;
@@ -143,12 +198,21 @@ export class EngineAcousticModel {
         // Exhaust blowdown includes turbulent broadband energy. NA high-speed
         // pulses should not be identical electronic waveforms; turbine damping
         // retains the approved turbo combustion character.
+        if(p.aircraftSource&&this.afterDelay[c]>0){
+          this.afterDelay[c]--;
+          if(this.afterDelay[c]<=0){this.slow[c]+=this.afterEnergy[c];this.fast[c]+=this.afterEnergy[c];this.afterfireCount++;}
+        }
         const envelope=this.slow[c]-this.fast[c];
-        const turbulence=p.turbo?0:(.025+.045*this.load)*p.texture;
-        const pulse=envelope*(1+(turbulence?this.noise()*turbulence:0));
+        const turbulence=p.turbo?0:(p.aircraftSource?.22+.30*this.load:.025+.045*this.load)*p.texture;
+        let flow=turbulence?this.noise():0;
+        if(p.aircraftSource){this.flowNoise[c]+=(flow-this.flowNoise[c])*flowLp;flow=this.flowNoise[c]*3;}
+        const pulse=envelope*(1+flow*turbulence);
         const line=this.lines[c];line[this.index]=pulse;
         const d=delays[c]+p.banks[c]*.25*sr/speed,r=reflections[c];
-        let arriving=p.openStubs?read(line,this.index,p.runners[c]*sr/speed):read(line,this.index,d)-.32*read(line,this.index,d+r)+.10*read(line,this.index,d+r*2);
+        const stubDelay=p.runners[c]*sr/speed;
+        // An open pipe still has a port, an open-end pressure inversion and
+        // repeat travel. Removing the collector must not remove the pipe itself.
+        let arriving=p.openStubs?(read(line,this.index,stubDelay)-.25*read(line,this.index,stubDelay+r)+.09*read(line,this.index,stubDelay+2*r)):read(line,this.index,d)-.32*read(line,this.index,d+r)+.10*read(line,this.index,d+r*2);
         if(p.firingPositions){
           const angle=2*Math.PI*(p.firingPositions[c]/p.cylinders+(p.rotary?this.rotorPhase:0));
           // Stationary radial outlets have fixed orientation; a rotary's outlets
@@ -181,6 +245,17 @@ export class EngineAcousticModel {
         const y=hp*(this.hpY[b]+raw-this.hpX[b]);this.hpX[b]=raw;this.hpY[b]=y;
       }
       let outputL=this.hpY[0]+(this.hpY[2]??0)*.707,outputR=this.hpY[1]+(this.hpY[2]??0)*.707;
+      if(p.aircraftBank){
+        // Six exhaust pulses per two crank revolutions at each V12 bank:
+        // N/20 Hz, not an F1-style high-speed surrogate. Retain bank identity.
+        for(let b=0;b<2;b++)this.bankBody[b]+=(this.hpY[b]-this.bankBody[b])*bodyLp;
+        outputL+=this.bankBody[0]*.45;outputR+=this.bankBody[1]*.45;
+        // Approximate off-axis observer: the far bank arrives through a longer
+        // air path. Coincident opposite-phase banks cancel their low order when
+        // summed to mono. Bore-scaled separation is illustrative, not measured.
+        this.farBankLine[this.index]=outputR;
+        outputR=.88*read(this.farBankLine,this.index,p.bankPathM*sr/343);
+      }
       if(p.crossover==='x'){
         const l=outputL,r=outputR;outputL=l*.65+r*.35;outputR=r*.65+l*.35;
       } else if(p.crossover==='h'){
@@ -188,8 +263,9 @@ export class EngineAcousticModel {
         const balance=this.crossoverLow*.10;outputL-=balance;outputR+=balance;
       }
       const stereo=p.banked&&right;
-      exhaust[i]=(stereo?outputL+outputR*.35:outputL+outputR)*this.active*.75;
-      if(right)right[i]=(stereo?outputR+outputL*.35:outputL+outputR)*this.active*.75;
+      const crossfeed=p.aircraftBank?.12:.35;
+      exhaust[i]=(stereo?outputL+outputR*crossfeed:outputL+outputR)*this.active*.75;
+      if(right)right[i]=(stereo?outputR+outputL*crossfeed:outputL+outputR)*this.active*.75;
       const air=this.noise();
       this.intakeLow+=(air*(.18+intakeExcitation)-this.intakeLow)*intakeLp;
       this.intakeHigh+=(this.intakeLow-this.intakeHigh)*intakeHp;
@@ -209,8 +285,24 @@ export class EngineAcousticModel {
       this.drivePhase=(this.drivePhase+this.rpm/60*(p.camDrive==='gear'?12:6)/sr)%1;
       const valveNoise=(air-this.mechLow)*(p.sleeve?.35:1)*(.002+this.rpm/14000*.007)*(p.valvetrain==='ohv'?1.15:1)*(.7+p.texture*.6);
       const injectorTick=air*this.injectorEnv*injectionGain+air*this.pumpEnv*injectionGain*.5;
-      const drive=Math.sin(this.drivePhase*2*Math.PI)*(p.camDrive==='gear'?.0035:p.camDrive==='chain'?.0006:p.camDrive==='belt_chain'?.0003:0);
-      mechanical[i]=(valveNoise+injectorTick+drive)*this.active;
+      let drive=Math.sin(this.drivePhase*2*Math.PI)*(p.camDrive==='gear'?.0035:p.camDrive==='chain'?.0006:p.camDrive==='belt_chain'?.0003:0);
+      let aircraftMechanical=0;
+      if(p.aircraftSource){
+        let strikes=0;
+        for(let c=0;c<p.cylinders;c++){
+          if(this.valveDelay[c]>0){this.valveDelay[c]--;if(this.valveDelay[c]<=0)this.valveEnvelope[c]=.7+.3*this.noise();}
+          this.valveEnvelope[c]*=valveDecay;strikes+=this.valveEnvelope[c];
+        }
+        const impact=air*strikes/Math.sqrt(p.cylinders)*(p.sleeve?.08:1);
+        const ring=(1-valveB)*impact+valveA*this.valveRing1-valveB*this.valveRing2;
+        this.valveRing2=this.valveRing1;this.valveRing1=ring;
+        this.gearNoise+=(air-this.gearNoise)*gearLp;
+        const exposure=p.radial?1.8:p.valvetrain==='ohv'?1.1:.65;
+        aircraftMechanical=(impact*.019+ring*.045)*exposure*(.5+.5*p.texture);
+        // A quiet gear mesh with broadband tooth contact, not a pure siren.
+        drive=drive*.22+this.gearNoise*(p.camDrive==='gear'?.003:0);
+      }
+      mechanical[i]=(valveNoise+injectorTick+drive+aircraftMechanical)*this.active;
       let propSound=0;
       this.propRpm=this.rpm*p.propRatio;this.bladeHz=this.propRpm/60*p.propBlades;
       if(p.propeller){

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {OfflineAudioContext,AudioWorkletNode} from 'node-web-audio-api';
 const root=new URL('../',import.meta.url).pathname;
 const out=root+'node_modules/.cache/audio-check.mjs';
-await build({stdin:{contents:`export {useEngineAudio} from './lib/engineAudio.js';export {turboVoice,blowerVoice,releaseVoice,recoverFireTime} from './lib/engineAudioDynamics.js';export {smoothStep} from './lib/engineAudioPrimitives.ts';`,resolveDir:root+'src',loader:'js'},bundle:true,platform:'node',format:'esm',outfile:out,alias:{react:root+'scripts/fixtures/audio-react.mjs'}});
+await build({stdin:{contents:`export {useEngineAudio} from './lib/engineAudio.js';export {turboVoice,blowerVoice,releaseVoice,recoverFireTime} from './lib/engineAudioDynamics.js';export {smoothStep} from './lib/engineAudioPrimitives.ts';export {planePresets} from './data/planeEngines.ts';`,resolveDir:root+'src',loader:'js'},bundle:true,platform:'node',format:'esm',outfile:out,alias:{react:root+'scripts/fixtures/audio-react.mjs'}});
 const m=await import(out);
 assert.equal(m.smoothStep(.2,.04,.2),1);assert.equal(m.smoothStep(.38,.08,.38),1);assert.ok(Math.abs(m.smoothStep(.12,.04,.2)-.5)<1e-12);
 assert.equal(m.recoverFireTime(1,10),10.005);assert.equal(m.recoverFireTime(10.1,10),10.1);
@@ -62,15 +62,23 @@ reset();const p={rpm:4000,dispL:2.3,boostPsi:8,mapKpa:150,chargeTempC:30};await 
 await renderHook(base,p,.8,false);await renderHook(base,p,.8,true);clock+=.1;timers.splice(0).forEach(t=>t.fn());await Promise.resolve();assert.equal(adapter.state,'running');
 // Exercise the production hook's worklet construction and all four bus connections.
 // Native processor-only tests cannot catch a missing bus on nodesRef.current.
-reset();window.AudioWorkletNode=function(_context,name,options){return new AudioWorkletNode(native,name,options);};
-await renderHook({...base,audioModel:'acoustic',applicationType:'plane',engineLayout:'radial5',planeRatedRpm:1800,redline:1800,propellerEnabled:true}, {...p,rpm:1500},.8);
+window.AudioWorkletNode=function(_context,name,options){return new AudioWorkletNode(native,name,options);};
+for(const layout of ['i4','radial9','radial14','v12']){
+reset();
+const preset=m.planePresets.find(p=>p.config.engineLayout===layout);
+const aircraftConfig={...base,...preset.config,engineLoudness:2,propellerLoudness:1.5,superchargerLoudness:1.8,roomSize:1};
+await renderHook(aircraftConfig, {...p,rpm:aircraftConfig.redline},1);
 let acoustic;
 for(let i=0;i<200;i++){acoustic=refs.find(ref=>ref.current?.acousticNode)?.current;if(acoustic)break;await new Promise(resolve=>setTimeout(resolve,10));}
 assert.ok(acoustic?.acousticNode,'production hook connects a native worklet');assert.equal(acoustic.acousticGains.length,4);assert.ok(acoustic.airBus,'propeller output has a destination');
 for(const fn of intervals.values())fn();await new Promise(resolve=>setTimeout(resolve,30));
-const aircraftBuffer=await native.startRendering();assert.ok(aircraftBuffer.getChannelData(0).some(x=>Math.abs(x)>.001));assert.ok(!acoustic.acousticFailed);
-acoustic.acousticNode.port.close();delete window.AudioWorkletNode;
-console.log('PASS: production aircraft hook, native worklet and four output buses.');
+const aircraftBuffer=await native.startRendering();let aircraftPeak=0,aircraftEnergy=0;
+for(const x of aircraftBuffer.getChannelData(0)){assert.ok(Number.isFinite(x));aircraftPeak=Math.max(aircraftPeak,Math.abs(x));aircraftEnergy+=x*x;}
+assert.ok(aircraftPeak>.001&&aircraftPeak<.98,'production aircraft mix has headroom');assert.ok(aircraftEnergy>1);assert.ok(!acoustic.acousticFailed);
+acoustic.acousticNode.port.close();console.log(layout+' production aircraft worklet: peak '+aircraftPeak.toFixed(4));
+}
+delete window.AudioWorkletNode;
+console.log('PASS: four production aircraft hooks, native worklets and four output buses.');
 console.log('PASS: throttle blends, blower controls, valve choices, stall recovery, restart race and eight actual offline renders. This does not assess subjective sound quality.');fs.unlinkSync(out);
 
 
