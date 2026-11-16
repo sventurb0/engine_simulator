@@ -6,6 +6,13 @@ export const smoothStep = (x: number, e0: number, e1: number) => {
 };
 
 export const engineLayouts: Record<string, { label: string; cylinders: number; firingFactor: number; pulseSpread: number; pulseDepth: number }> = {
+  flat2: {label:"Flat twin",cylinders:2,firingFactor:1,pulseSpread:.03,pulseDepth:1},
+  radial5: {label:"Radial 5",cylinders:5,firingFactor:2.5,pulseSpread:.08,pulseDepth:1.1},
+  radial7: {label:"Radial 7",cylinders:7,firingFactor:3.5,pulseSpread:.06,pulseDepth:1.1},
+  radial9: {label:"Radial 9",cylinders:9,firingFactor:4.5,pulseSpread:.04,pulseDepth:1.15},
+  radial14: {label:"Two-row radial 14",cylinders:14,firingFactor:7,pulseSpread:.04,pulseDepth:1.15},
+  rotary9: {label:"Rotating-cylinder rotary 9",cylinders:9,firingFactor:4.5,pulseSpread:.04,pulseDepth:1.1},
+  w12: {label:"Three-bank W12",cylinders:12,firingFactor:6,pulseSpread:.04,pulseDepth:1.15},
   i3: { label: "Inline 3", cylinders: 3, firingFactor: 1.5, pulseSpread: 0.11, pulseDepth: 0.96 },
   i4: { label: "Inline 4", cylinders: 4, firingFactor: 2.0, pulseSpread: 0.02, pulseDepth: 1.0 },
   i5: { label: "Inline 5", cylinders: 5, firingFactor: 2.5, pulseSpread: 0.16, pulseDepth: 1.05 },
@@ -18,3 +25,4 @@ export const engineLayouts: Record<string, { label: string; cylinders: number; f
   v10: { label: "V10", cylinders: 10, firingFactor: 5.0, pulseSpread: 0.10, pulseDepth: 1.18 },
   v12: { label: "V12", cylinders: 12, firingFactor: 6.0, pulseSpread: 0.06, pulseDepth: 1.28 },
 };
+

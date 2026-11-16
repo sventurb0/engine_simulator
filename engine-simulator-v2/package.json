@@ -12,7 +12,8 @@
     "test:calibration": "node scripts/check-calibration.mjs",
     "fit:calibration": "node scripts/fit-calibrations.mjs",
     "test:audio": "node scripts/check-audio.mjs",
-    "test:acoustics": "node scripts/check-acoustics.mjs"
+    "test:acoustics": "node scripts/check-acoustics.mjs",
+    "test:planes": "node scripts/check-planes.mjs"
   },
   "dependencies": {
     "@radix-ui/react-select": "^2.2.6",

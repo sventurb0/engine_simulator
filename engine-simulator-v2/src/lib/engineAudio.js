@@ -570,8 +570,8 @@ export function useEngineAudio(config, point, enabled, throttle) {
       try {
         nodes.acousticPromise ??= ctx.audioWorklet.addModule(new URL('./engineAcousticProcessor.js', import.meta.url).href).then(() => {
           if (ctxRef.current !== ctx) return;
-          const node = new window.AudioWorkletNode(ctx, 'apex-engine-acoustics', {numberOfInputs:0, numberOfOutputs:3, outputChannelCount:[2,1,1]});
-          nodes.acousticGains = [nodes.exhaustBus,nodes.intakeBus,nodes.blockBus].map((bus,index) => {
+          const node = new window.AudioWorkletNode(ctx, 'apex-engine-acoustics', {numberOfInputs:0, numberOfOutputs:4, outputChannelCount:[2,1,1,1]});
+          nodes.acousticGains = [nodes.exhaustBus,nodes.intakeBus,nodes.blockBus,nodes.airBus].map((bus,index) => {
             const gain = ctx.createGain();gain.gain.value=0;node.connect(gain,index,0);gain.connect(bus);return gain;
           });
           node.onprocessorerror = () => { nodes.acousticFailed=true;setAcousticStatus('fallback'); };
@@ -735,8 +735,8 @@ export function useEngineAudio(config, point, enabled, throttle) {
         if (localNodes.acousticNode) {
           const components=localNodes.acousticComponentId===acousticProfile?.id?undefined:acousticProfile;
           localNodes.acousticComponentId=acousticProfile?.id;
-          localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),components,rpm:targetPoint.rpm,throttle:localThrottle,load:clamp((targetPoint.mapKpa-30)/75,0,1),header:localConfig.headerType,exhaust:localConfig.exhaustType});
-          const levels=[micProfile.exhaust*(1.5+localConfig.engineLoudness*.85),micProfile.intake*(.7+localConfig.engineLoudness*.3),micProfile.block];
+          localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),components,rpm:targetPoint.rpm,throttle:localThrottle,load:clamp((targetPoint.mapKpa-30)/75,0,1),rotaryBlip:localConfig.rotaryBlip,airspeed:(localConfig.vehicleSpeedKph??0)/3.6,header:localConfig.headerType,exhaust:localConfig.exhaustType});
+          const levels=[micProfile.exhaust*(1.5+localConfig.engineLoudness*.85),micProfile.intake*(.7+localConfig.engineLoudness*.3),micProfile.block,micProfile.air*2];
           localNodes.acousticGains.forEach((gain,index)=>gain.gain.setTargetAtTime(useAcoustics?levels[index]:0,localCtx.currentTime,.025));
         }
         if(useAcoustics && localNodes.acousticRoomPosition !== localConfig.micPosition){localNodes.acousticRoom.buffer=acousticRoomBuffer(localCtx,localConfig.micPosition);localNodes.acousticRoomPosition=localConfig.micPosition;}
@@ -995,6 +995,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
 export function useApexEngineAudio({ config, point, enabled, throttle, pageActive }) {
   return useEngineAudio(config, point, Boolean(enabled && pageActive), throttle);
 }
+
 
 
 

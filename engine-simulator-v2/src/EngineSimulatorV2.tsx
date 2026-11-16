@@ -2,6 +2,7 @@ import { engineCalibrations, calibrationById, calibrationForPreset, calibrationF
 import { compressorMaps, mapEfficiency, correctedFlow, type CompressorMapKey } from "./data/compressorMaps";
 import { WATTS_PER_HP, NM_PER_LBFT, PA_PER_PSI, KG_S_TO_LB_MIN, powerHpFromTorque, torqueFromPowerHp, bmepPsiFromTorque, fuelProperties, mixtureEfficiency, ignitionEfficiency, injectorCcFromFuel, angularAccelerationRpmS, throttleAfterStep } from "./lib/powertrainMath";
 import { expandFactoryPresets, manufacturerReferences } from "./data/factoryEngines";
+import { planePresets } from "./data/planeEngines";
 import { documentedAcoustics } from "./data/documentedAcoustics";
 import { acousticProfileFor } from "./lib/engineAcousticProcessor.js";
 import { useEngineAudio, createProceduralSampleBuffer } from "./lib/engineAudio.js";
@@ -16,7 +17,7 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tool
 import { Play, Pause, Gauge, Activity, Volume2, RotateCcw } from "lucide-react";
 
 type InductionType = "na" | "turbo" | "supercharger";
-type EngineLayout = "i3" | "i4" | "i5" | "i6" | "v4" | "v6" | "flat4" | "flat6" | "v8" | "v10" | "v12";
+type EngineLayout = "flat2" | "radial5" | "radial7" | "radial9" | "radial14" | "rotary9" | "w12" | "i3" | "i4" | "i5" | "i6" | "v4" | "v6" | "flat4" | "flat6" | "v8" | "v10" | "v12";
 type TurboFamily = "small" | "medium" | "large";
 type BlowerType = "roots" | "twinscrew" | "centrifugal";
 type ChargeReleaseMode = "none" | "recirc" | "dump";
@@ -39,11 +40,21 @@ type MicPosition = "dyno_room" | "cockpit" | "engine_bay" | "intake_side" | "rea
 type GraphMode = "live" | "dyno";
 type GraphPage = "power" | "diagnostics";
 type DiagnosticMetricKey = "vePct" | "mapKpa" | "chargeTempC" | "airLbMin" | "injectorCc" | "compressorEffPct" | "densityRatio" | "bmepPsi" | "targetAfr" | "pr" | "eventHz";
-type ControlTab = "library" | "live" | "engine" | "induction" | "environment" | "audio";
+type ControlTab = "planes" | "library" | "live" | "engine" | "induction" | "environment" | "audio";
 type FiringSoundMode = "stock" | "even" | "crossplane_i4" | "bigbang_i4" | "cp3_triple" | "bigbang_v4" | "oddfire_v6" | "lopey_v8";
-type ApplicationType = "car";
+type ApplicationType = "car" | "plane";
 
 export type SimConfig = {
+  planeRatedRpm?: number;
+  planePowerScale?: number;
+  propellerEnabled?: boolean;
+  propellerBlades?: number;
+  propellerDiameterM?: number;
+  propellerRatio?: number;
+  propellerLoudness?: number;
+  rotaryBlip?: boolean;
+  sleeveValves?: boolean;
+  planeExhaust?: "stubs" | "collector";
   audioModel?: "legacy" | "acoustic";
   airCleaner?: "auto" | "airbox" | "open_filter" | "trumpets";
   carbSecondary?: "progressive" | "synchronous";
@@ -73,7 +84,7 @@ export type SimConfig = {
   bore: number;
   stroke: number;
   compressionRatio: number;
-  valvesPerCylinder: 2 | 3 | 4 | 5;
+  valvesPerCylinder: 1 | 2 | 3 | 4 | 5;
   valvetrainLayout: ValvetrainLayout;
   v8Crank: V8CrankType;
   vvtMode: VvtMode;
@@ -167,7 +178,7 @@ type SolvePoint = {
 };
 
 type SweepRow = SolvePoint & { time?: number };
-export type EnginePreset = { name: string; manufacturer?: string; nominalLitres?: number; setupKind?: "existing" | "illustrative"; config: Partial<SimConfig>; group?: "factory" | "custom" | "saved" };
+export type EnginePreset = { name: string; manufacturer?: string; nominalLitres?: number; setupKind?: "existing" | "illustrative"; config: Partial<SimConfig>; referenceName?: string; category?: string; era?: string; source?: string; referenceHp?: number; referenceRpm?: number; ratingAltitudeM?: number; evidence?: string; group?: "plane" | "factory" | "custom" | "saved" };
 
 const PA_TO_PSI = 1 / PA_PER_PSI;
 const KELVIN = 273.15;
@@ -177,6 +188,7 @@ const GAMMA_AIR = 1.4;
 const fmt = (n: number, d = 0) => (Number.isFinite(n) ? n.toFixed(d) : "—");
 
 function resolveIdleRpm(config: SimConfig) {
+  if(config.applicationType==='plane')return clamp(config.idleRpm,350,Math.min(1000,config.redline*.65));
   let base = 800;
   switch (config.engineLayout) {
     case "i3": base = 850; break;
@@ -502,7 +514,7 @@ const legacyPresets: EnginePreset[] = [
   },
 ];
 
-const presets = expandFactoryPresets(legacyPresets);
+const presets = [...expandFactoryPresets(legacyPresets),...planePresets];
 
 const defaultConfig: SimConfig = {
   audioModel: "acoustic", airCleaner:"auto",carbSecondary:"progressive",camDrive:"chain",exhaustCrossover:"none",catalyst:"stock",flywheelInertiaKgM2:.18,
@@ -568,7 +580,17 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
   return {
     ...defaultConfig,
     ...config,
-    applicationType: "car",
+    applicationType: config.applicationType==='plane'?'plane':'car',
+    planeRatedRpm: Number.isFinite(config.planeRatedRpm)?clamp(config.planeRatedRpm!,800,4000):undefined,
+    planePowerScale: Number.isFinite(config.planePowerScale)?clamp(config.planePowerScale!,.05,6):undefined,
+    propellerEnabled: config.applicationType==='plane'&&config.propellerEnabled!==false,
+    propellerBlades: Math.round(Number.isFinite(config.propellerBlades)?clamp(config.propellerBlades!,2,4):2),
+    propellerDiameterM: Number.isFinite(config.propellerDiameterM)?clamp(config.propellerDiameterM!,.8,4.5):2,
+    propellerRatio: Number.isFinite(config.propellerRatio)?clamp(config.propellerRatio!,.25,1):1,
+    propellerLoudness: Number.isFinite(config.propellerLoudness)?clamp(config.propellerLoudness!,0,1.5):.6,
+    rotaryBlip: config.applicationType==='plane'&&config.rotaryBlip===true,
+    sleeveValves: config.sleeveValves===true,
+    planeExhaust: config.planeExhaust==='collector'?'collector':'stubs',
     audioModel: config.audioModel === "legacy" ? "legacy" : "acoustic",
     airCleaner: coerceOption(config.airCleaner,["auto","airbox","open_filter","trumpets"] as const,"auto"),
     carbSecondary: coerceOption(config.carbSecondary,["progressive","synchronous"] as const,"progressive"),
@@ -616,15 +638,23 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     firingSoundMode: coerceOption(config.firingSoundMode, firingModeValues, defaultConfig.firingSoundMode),
     intercoolerType: coerceOption(config.intercoolerType, intercoolerValues, defaultConfig.intercoolerType),
     micPosition: coerceOption(config.micPosition, micValues, defaultConfig.micPosition),
-    valvesPerCylinder: [2, 3, 4, 5].includes(config.valvesPerCylinder as number) ? (config.valvesPerCylinder as 2 | 3 | 4 | 5) : defaultConfig.valvesPerCylinder,
+    valvesPerCylinder: [1, 2, 3, 4, 5].includes(config.valvesPerCylinder as number) ? (config.valvesPerCylinder as 1 | 2 | 3 | 4 | 5) : defaultConfig.valvesPerCylinder,
     cinemaMode: typeof config.cinemaMode === "boolean" ? config.cinemaMode : defaultConfig.cinemaMode,
   };
 }
 
 function configForPreset(preset:EnginePreset):SimConfig {
+  if(preset.group==='plane'){
+    const c=sanitizeConfig({...defaultConfig,...preset.config,applicationType:'plane',audioModel:'acoustic',calibrationId:undefined,calibrationEnabled:false,gameMeta:{name:preset.name}});
+    // Fixed upstream charge coefficient at the representative rating. Tuneable
+    // components still affect power; no runtime torque clamp or name dispatch.
+    let lo=.05,hi=6;
+    for(let i=0;i<45;i++){const mid=(lo+hi)/2;if(solveDynoPoint(c,preset.referenceRpm!,mid).brakeHp<preset.referenceHp!)lo=mid;else hi=mid;}
+    return {...c,planePowerScale:(lo+hi)/2};
+  }
   const profile=preset.group==='factory'?calibrationForPreset(preset.name):undefined;
   return sanitizeConfig({...defaultConfig,...preset.config,...profile?.overrides,
-    ...(profile?{calibrationId:profile.id,calibrationEnabled:true}:{}), gameMeta:{name:preset.name},applicationType:'car'});
+    ...(profile?{calibrationId:profile.id,calibrationEnabled:true}:{}), gameMeta:{name:preset.name},applicationType:preset.config.applicationType??'car'});
 }
 
 function sanitizePreset(preset: unknown): EnginePreset | null {
@@ -669,7 +699,7 @@ const diagnosticMetricMeta: Record<DiagnosticMetricKey, { label: string; color: 
 };
 
 const storageKey = "engine-sim-user-presets";
-const engineLayoutValues = ["i3", "i4", "i5", "i6", "v4", "v6", "flat4", "flat6", "v8", "v10", "v12"] as const;
+const engineLayoutValues = ["flat2","radial5","radial7","radial9","radial14","rotary9","w12","i3", "i4", "i5", "i6", "v4", "v6", "flat4", "flat6", "v8", "v10", "v12"] as const;
 const inductionValues = ["na", "turbo", "supercharger"] as const;
 const valvetrainValues = ["ohv", "sohc", "dohc"] as const;
 const v8CrankValues = ["crossplane", "flatplane"] as const;
@@ -722,6 +752,7 @@ function squareBias(boreMm: number, strokeMm: number) {
 }
 
 function valvetrainCeiling(config: SimConfig) {
+  if(config.applicationType==='plane')return config.planeRatedRpm??config.redline;
   const shape = squareBias(config.bore, config.stroke);
   const hw = getHardwareState(config, config.liftSwitchRpm + 250);
   const flowBiasRpm = (config.topEndFlowBias - 0.5) * 1700;
@@ -737,6 +768,10 @@ function valvetrainCeiling(config: SimConfig) {
 function estimateVE(config: SimConfig, rpm: number, mapKpa: number, dispL: number) {
   const shape = squareBias(config.bore, config.stroke);
   const hw = getHardwareState(config, rpm);
+  if(config.applicationType==='plane'){
+    const rated=config.planeRatedRpm??config.redline;
+    return clamp((.68+.12*Math.exp(-Math.pow((rpm-rated*.78)/(rated*.55),2)))*(1+config.camAggression*.1+hw.vePeakAdj),.35,1.15);
+  }
   const isLargeNa = config.induction === "na" && dispL >= 3.8;
 
   const peakRpm = ((config.induction === "na"
@@ -966,7 +1001,7 @@ function solvePoint(config: SimConfig, runtime: RuntimeState, chargeScaleOverrid
   const throttle = clamp(runtime.throttle, 0, 1);
   const rpm = clamp(runtime.rpm, resolveIdleRpm(config), config.redline);
   const hw = getHardwareState(config, rpm);
-  const chargeScale = chargeScaleOverride ?? chargeCorrection(config,rpm);
+  const chargeScale = chargeScaleOverride ?? (config.applicationType==='plane'?(config.planePowerScale??1):chargeCorrection(config,rpm));
 
   let boostPsi = 0;
   let pr = 1;
@@ -1060,7 +1095,7 @@ function solvePoint(config: SimConfig, runtime: RuntimeState, chargeScaleOverrid
   // while airflow/VE supplies the speed and hardware effects. No torque floor.
   const cycleEfficiency = (1 - Math.pow(config.compressionRatio, -0.30)) / (1 - Math.pow(10, -0.30));
   const indicatedEfficiency = clamp(0.34 * cycleEfficiency, 0.26, 0.42) * timingEff * afrEff * chargeTempPenalty;
-  const indicatedWatts = combustibleFuelKgS * fuel.lowerHeatingValue * indicatedEfficiency;
+  const indicatedWatts = combustibleFuelKgS * fuel.lowerHeatingValue * indicatedEfficiency * (config.engineLayout==='rotary9'&&config.rotaryBlip?0:1);
   const indicatedHp = indicatedWatts / WATTS_PER_HP;
   const frictionTorqueLbFt = estimateFrictionTorque(config, rpm, dispL, engine.cylinders);
   const pumpingTorqueLbFt = Math.max(0, atm.pressurePa - mapKpa * 1000) * dispM3 / (4 * Math.PI * NM_PER_LBFT);
@@ -1114,9 +1149,10 @@ function solveDynoPoint(config: SimConfig, rpm: number, chargeScaleOverride?: nu
 
 function buildDynoSweep(config: SimConfig) {
   const rows: SweepRow[] = [];
-  const start = Math.max(1200, resolveIdleRpm(config));
-  for (let rpm = start; rpm < config.redline; rpm += 100) rows.push(solveDynoPoint(config,rpm));
+  const start = config.applicationType==='plane'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config));
+  for (let rpm = start; rpm < config.redline; rpm += config.applicationType==='plane'?25:100) rows.push(solveDynoPoint(config,rpm));
   rows.push(solveDynoPoint(config,config.redline));
+  if(config.applicationType==='plane'&&config.planeRatedRpm&&!rows.some(row=>row.rpm===config.planeRatedRpm))rows.push(solveDynoPoint(config,config.planeRatedRpm));
   const profile=config.calibrationEnabled===false?undefined:calibrationById(config.calibrationId);
   for(const point of profile?.points??[])if(point.rpm>=start && point.rpm<=config.redline && !rows.some(row=>row.rpm===point.rpm))rows.push(solveDynoPoint(config,point.rpm));
   return rows.sort((a,b)=>a.rpm-b.rpm);
@@ -1269,15 +1305,16 @@ function runRuntimeSelfChecks() {
 }
 
 export default function EngineSimulatorV2() {
-  const [config, setConfig] = useState<SimConfig>(defaultConfig);
-  const [runtime, setRuntime] = useState<RuntimeState>(defaultRuntime);
+  const startInPlanes=typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('section')==='planes';
+  const [config, setConfig] = useState<SimConfig>(()=>startInPlanes?configForPreset(planePresets[0]):defaultConfig);
+  const [runtime, setRuntime] = useState<RuntimeState>(()=>startInPlanes?{...defaultRuntime,rpm:planePresets[0].config.idleRpm!}:defaultRuntime);
   const [graphMode, setGraphMode] = useState<GraphMode>("dyno");
   const [graphPage, setGraphPage] = useState<GraphPage>("power");
   const [diagLeftMetric, setDiagLeftMetric] = useState<DiagnosticMetricKey>("vePct");
   const [diagRightMetric, setDiagRightMetric] = useState<DiagnosticMetricKey>("mapKpa");
   const [running, setRunning] = useState(true);
   const [audioEnabled, setAudioEnabled] = useState(false);
-  const [tab, setTab] = useState<ControlTab>("library");
+  const [tab, setTab] = useState<ControlTab>(startInPlanes?"planes":"library");
   const [liveTrace, setLiveTrace] = useState<SweepRow[]>([]);
   const [liveThrottleTarget, setLiveThrottleTarget] = useState(defaultRuntime.throttle);
   const [sweepRunning, setSweepRunning] = useState(false);
@@ -1285,6 +1322,7 @@ export default function EngineSimulatorV2() {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "downloaded" | "blocked">("idle");
   const [presetSearch, setPresetSearch] = useState("");
   const [manufacturer, setManufacturer] = useState("Saab");
+  const [planeSearch,setPlaneSearch]=useState("");
   const [savePresetName, setSavePresetName] = useState("");
   const [savedPresets, setSavedPresets] = useState<EnginePreset[]>([]);
   const lastLiveTraceSampleRef = useRef(0);
@@ -1318,7 +1356,7 @@ export default function EngineSimulatorV2() {
   const ratedHp=ratedPower?powerHpFromTorque(ratedPower.torqueNm/1.3558179483314004,ratedPower.rpm):0;
   const selectedPreset = presets.find(p=>p.name===config.gameMeta?.name);
   const customPresets = useMemo(() => filteredPresets.filter((p) => p.group === "custom"), [filteredPresets]);
-  const userPresets = useMemo(() => filteredPresets.filter((p) => p.group === "saved"), [filteredPresets]);
+  const userPresets = useMemo(() => filteredPresets.filter((p) => p.group === "saved" && p.config.applicationType!=='plane'), [filteredPresets]);
 
   const acousticHardware = useMemo(()=>acousticProfileFor({...config,acousticIdleRpm:resolveIdleRpm(config)}),[config]);
   const { ensureAudio, acousticStatus } = useEngineAudio({...config,acousticIdleRpm:resolveIdleRpm(config)}, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
@@ -1396,13 +1434,13 @@ export default function EngineSimulatorV2() {
       const now=performance.now();
       const dt=Math.min(0.1,Math.max(0,(now-last)/1000));last=now;
       setSweepCursor(prev=>{
-        const next=Math.min(config.redline,prev+420*dt);
+        const next=Math.min(config.redline,prev+(config.applicationType==='plane'?config.redline*.12:420)*dt);
         if(next>=config.redline) setSweepRunning(false);
         return next;
       });
     },1000/60);
     return ()=>window.clearInterval(id);
-  },[sweepRunning,config.redline]);
+  },[sweepRunning,config.redline,config.applicationType]);
 
   const graphData = useMemo(() => {
     if (graphMode === "live") return liveTrace;
@@ -1532,7 +1570,7 @@ export default function EngineSimulatorV2() {
   const runSweep = async () => {
     setGraphMode("dyno");
     setGraphPage("power");
-    setSweepCursor(Math.max(1200, resolveIdleRpm(config)));
+    setSweepCursor((config.applicationType==='plane'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config))));
     setSweepRunning(true);
     if (audioEnabled) await ensureAudio();
   };
@@ -1547,7 +1585,7 @@ export default function EngineSimulatorV2() {
             <CardHeader className="shrink-0 border-b border-slate-700/60 !pb-4">
               <div className="text-[10px] uppercase tracking-[0.25em] text-sky-400">Apex · Engine laboratory</div>
               <CardTitle className={UI.title}>{config.gameMeta?.name ?? 'Custom engine'}</CardTitle>
-              <div className="text-xs text-slate-400">{sweepRunning ? 'Full-load reference sweep · optimal mixture / estimated MBT' : 'Choose an engine, tune it, then run a sweep.'}</div>
+              <div className="text-xs text-slate-400">{sweepRunning ? (config.applicationType==='plane'?'Aircraft bench sweep · estimated performance':'Full-load reference sweep · optimal mixture / estimated MBT') : 'Choose an engine, tune it, then run a sweep.'}</div>
               <div className="grid grid-cols-[1fr_auto] gap-2 pt-2">
                 <Button className={`${UI.buttonPrimary} !h-12`} onClick={() => sweepRunning ? setSweepRunning(false) : void runSweep()}>
                   <Gauge className="h-4 w-4" /> {sweepRunning ? 'Stop dyno' : 'Run dyno'}
@@ -1557,7 +1595,8 @@ export default function EngineSimulatorV2() {
                 </Button>
               </div>
               <div className="grid grid-cols-3 gap-1 pt-3" role="navigation" aria-label="Simulator sections">
-                <ControlTabButton active={tab === 'library'} onClick={() => setTab('library')}>Library</ControlTabButton>
+                <ControlTabButton active={tab === 'library'} onClick={() => setTab('library')}>Cars</ControlTabButton>
+                <ControlTabButton active={tab === 'planes'} onClick={() => setTab('planes')}>Planes</ControlTabButton>
                 <ControlTabButton active={tab === 'engine'} onClick={() => setTab('engine')}>Engine</ControlTabButton>
                 <ControlTabButton active={tab === 'induction'} onClick={() => setTab('induction')}>Boost</ControlTabButton>
                 <ControlTabButton active={tab === 'live'} onClick={() => setTab('live')}>Drive</ControlTabButton>
@@ -1566,6 +1605,21 @@ export default function EngineSimulatorV2() {
               </div>
             </CardHeader>
             <CardContent className="min-h-0 grid gap-4 overflow-y-auto !pt-4 lg:max-h-[calc(100vh-20rem)]">
+              {tab==='planes' && <div className="grid gap-4">
+                <div><h3 className="font-semibold text-sky-300">Planes · interwar engine collection</h3><p className="mt-2 text-xs text-slate-400">20 fictional game engines based on real produced designs. Includes older surplus engines. Audio and curves are procedural estimates; propellers are illustrative installations, not aircraft flight models.</p></div>
+                <input aria-label="Find a plane engine" placeholder="Search engine, historical reference or layout…" className={UI.select} value={planeSearch} onChange={e=>setPlaneSearch(e.target.value)}/>
+                {['Inline','Flat','Radial','V','Rotary','W'].map(category=>{const entries=planePresets.filter(p=>p.category===category&&`${p.name} ${p.referenceName} ${p.category}`.toLowerCase().includes(planeSearch.toLowerCase()));return entries.length?<details open key={category} className="rounded-xl border border-slate-700 p-3"><summary className="cursor-pointer font-medium">{category} · {entries.length}</summary><div className="mt-2 grid gap-2">{entries.map(p=><button key={p.name} aria-pressed={config.gameMeta?.name===p.name} onClick={()=>applyPreset(p)} className={`rounded-lg border p-3 text-left ${config.gameMeta?.name===p.name?'border-sky-400 bg-sky-950':'border-slate-700 bg-slate-900'}`}><span className="block text-sm font-semibold">{p.name}</span><span className="block text-xs text-slate-400">{p.referenceName} · {p.era}<br/>{engineLayouts[p.config.engineLayout!].label} · {p.nominalLitres?.toFixed(1)} L · {p.referenceHp} hp reference</span></button>)}</div></details>:null;})}
+                {selectedPreset?.group==='plane' && <div className="rounded-xl border border-sky-800 p-3 text-xs text-slate-300"><strong>{selectedPreset.referenceName}</strong><p className="my-2">{selectedPreset.evidence}</p><p>Reference: {selectedPreset.referenceHp} hp at {selectedPreset.referenceRpm} RPM; rating altitude {selectedPreset.ratingAltitudeM??0} m. The curve is normalised at this point; other RPMs remain inferred. Full throttle on a bench does not validate propeller thrust or flight performance.</p><a className="block mt-2 text-sky-300 underline" href={selectedPreset.source} target="_blank" rel="noreferrer">Historical reference</a></div>}
+                {savedPresets.some(p=>p.config.applicationType==='plane')&&<details open><summary>Saved plane setups</summary>{savedPresets.filter(p=>p.config.applicationType==='plane').map(p=><Button key={p.name} className={UI.buttonOutline} onClick={()=>applyPreset(p)}>{p.name}</Button>)}</details>}
+                {config.applicationType==='plane' && <div className="grid gap-3 rounded-xl border border-slate-700 p-3"><h3 className="text-sm font-semibold">Propeller & aircraft sound</h3><label className="text-sm">Exhaust installation<select aria-label="Aircraft exhaust installation" className={UI.select} value={config.planeExhaust??'stubs'} onChange={e=>updateConfig('planeExhaust',e.target.value as SimConfig['planeExhaust'])}><option value="stubs">Individual short exhaust stubs</option><option value="collector">Collector and tailpipe</option></select></label><label className="text-sm"><input type="checkbox" checked={config.sleeveValves??false} onChange={e=>updateConfig('sleeveValves',e.target.checked)}/> Sleeve valves · reduced poppet-valve tick</label><p className="text-xs text-slate-400">Editable example installation. Prop RPM = engine RPM × reduction ratio. Propeller sound includes blade passage pulses and tip-speed noise.</p><label className="text-sm"><input type="checkbox" checked={config.propellerEnabled!==false} onChange={e=>updateConfig('propellerEnabled',e.target.checked)}/> Propeller sound</label>
+                  <LabeledSlider label="Propeller blades" value={config.propellerBlades??2} min={2} max={4} step={1} onChange={v=>updateConfig('propellerBlades',v)} display={`${config.propellerBlades??2}`} />
+                  <LabeledSlider label="Propeller reduction ratio" value={config.propellerRatio??1} min={.25} max={1} step={.01} onChange={v=>updateConfig('propellerRatio',v)} display={`${fmt(config.propellerRatio??1,2)} · ${fmt(displayedPoint.rpm*(config.propellerRatio??1))} prop RPM`} />
+                  <LabeledSlider label="Propeller diameter" value={config.propellerDiameterM??2} min={.8} max={4.5} step={.05} onChange={v=>updateConfig('propellerDiameterM',v)} display={`${fmt(config.propellerDiameterM??2,2)} m · estimated`} />
+                  <LabeledSlider label="Propeller loudness" value={config.propellerLoudness??.6} min={0} max={1.5} step={.05} onChange={v=>updateConfig('propellerLoudness',v)} display={`${fmt((config.propellerLoudness??.6)*100)} %`} />
+                  {config.engineLayout==='rotary9'&&<label className="text-sm"><input type="checkbox" checked={config.rotaryBlip??false} onChange={e=>updateConfig('rotaryBlip',e.target.checked)}/> Hold ignition cut / blip · combustion stops, propeller coasts at simulated RPM</label>}
+                  <p className="text-xs text-slate-400">Use Drive for throttle control, Test setup for altitude, and Sound for microphone position. The rotary ignition cut also removes combustion torque; full historical rotary controls and gyroscopic flight dynamics are not simulated.</p>
+                </div>}
+              </div>}
               {tab === 'library' && (
                 <div className="grid gap-4">
                   <div className="grid gap-2">
@@ -1652,7 +1706,7 @@ export default function EngineSimulatorV2() {
                           setRuntime((prev) => ({ ...prev, rpm: clamp(prev.rpm, resolveIdleRpm(config), config.redline - 25) }));
                         } else {
                           setSweepRunning(false);
-                          setSweepCursor(Math.max(1200, resolveIdleRpm(config)));
+                          setSweepCursor((config.applicationType==='plane'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config))));
                         }
                         return nextMode;
                       });
@@ -1697,9 +1751,9 @@ export default function EngineSimulatorV2() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <LabeledSlider label="Bore" value={config.bore} onChange={(v) => updateConfig("bore", v)} min={60} max={110} step={0.1} display={`${fmt(config.bore, 1)} mm`} />
-                    <LabeledSlider label="Stroke" value={config.stroke} onChange={(v) => updateConfig("stroke", v)} min={60} max={115} step={0.1} display={`${fmt(config.stroke, 1)} mm`} />
-                    <LabeledSlider label="Compression ratio" value={config.compressionRatio} onChange={(v) => updateConfig("compressionRatio", v)} min={7.5} max={14} step={0.1} display={`${fmt(config.compressionRatio, 1)} : 1`} />
+                    <LabeledSlider label="Bore" value={config.bore} onChange={(v) => updateConfig("bore", v)} min={60} max={config.applicationType==='plane'?250:110} step={0.1} display={`${fmt(config.bore, 1)} mm`} />
+                    <LabeledSlider label="Stroke" value={config.stroke} onChange={(v) => updateConfig("stroke", v)} min={60} max={config.applicationType==='plane'?250:115} step={0.1} display={`${fmt(config.stroke, 1)} mm`} />
+                    <LabeledSlider label="Compression ratio" value={config.compressionRatio} onChange={(v) => updateConfig("compressionRatio", v)} min={config.applicationType==='plane'?3.5:7.5} max={14} step={0.1} display={`${fmt(config.compressionRatio, 1)} : 1`} />
                     {config.engineLayout === "v8" ? (
                       <div className="grid gap-2">
                         <div className="text-sm text-slate-300">V8 crank type</div>
@@ -1718,9 +1772,10 @@ export default function EngineSimulatorV2() {
                     <div className="text-sm font-semibold text-slate-200">Head and valvetrain</div>
                     <div className="grid gap-2">
                       <div className="text-sm text-slate-300">Valves per cylinder</div>
-                      <Select value={String(config.valvesPerCylinder)} onValueChange={(v) => updateConfig("valvesPerCylinder", Number(v) as 2 | 3 | 4 | 5)}>
+                      <Select value={String(config.valvesPerCylinder)} onValueChange={(v) => updateConfig("valvesPerCylinder", Number(v) as 1 | 2 | 3 | 4 | 5)}>
                         <SelectTrigger className={UI.select}><SelectValue /></SelectTrigger>
                         <SelectContent>
+                          {config.applicationType==='plane'&&<SelectItem value="1">1 valve + intake ports</SelectItem>}
                           <SelectItem value="2">2 valves</SelectItem>
                           <SelectItem value="3">3 valves</SelectItem>
                           <SelectItem value="4">4 valves</SelectItem>
@@ -1856,7 +1911,7 @@ export default function EngineSimulatorV2() {
                     <LabeledSlider label="Cam aggression" value={config.camAggression * 100} onChange={(v) => updateConfig("camAggression", v / 100)} min={0} max={100} display={`${fmt(config.camAggression * 100, 0)} %`} />
                     <LabeledSlider label="Exhaust flow trim" value={config.exhaustFlow * 100} onChange={(v) => updateConfig("exhaustFlow", v / 100)} min={0} max={100} display={`${fmt(config.exhaustFlow * 100, 0)} %`} />
                     <LabeledSlider label="Top-end flow bias" value={config.topEndFlowBias * 100} onChange={(v) => updateConfig("topEndFlowBias", v / 100)} min={0} max={100} display={`${fmt(config.topEndFlowBias * 100, 0)} %`} />
-                    <LabeledSlider label="RPM cutoff" value={config.redline} onChange={(v) => updateConfig("redline", v)} min={4000} max={18000} step={100} display={`${fmt(config.redline, 0)} rpm`} />
+                    <LabeledSlider label="RPM cutoff" value={config.redline} onChange={(v) => updateConfig("redline", v)} min={config.applicationType==='plane'?1000:4000} max={config.applicationType==='plane'?4500:18000} step={100} display={`${fmt(config.redline, 0)} rpm`} />
                   </div>
                 </div>
               )}
@@ -2000,7 +2055,7 @@ export default function EngineSimulatorV2() {
                   <div className="rounded-xl border border-sky-500/30 p-3 text-sm">
                     <label htmlFor="audio-model" className="block mb-2 text-slate-300">Sound model</label>
                     <select id="audio-model" aria-label="Sound model" className={UI.select} value={config.audioModel??'acoustic'} onChange={e=>updateConfig('audioModel',e.target.value as 'legacy'|'acoustic')}>
-                      <option value="legacy">Legacy engine voice</option>
+                      <option value="legacy" disabled={config.applicationType==='plane'}>Legacy engine voice</option>
                       <option value="acoustic" disabled={!acousticProfileFor(config)}>Component acoustics · default</option>
                     </select>
                     <p className="mt-2 text-xs text-slate-400">{acousticStatus==='ready'?'Component acoustics active':acousticStatus==='off'?'Audio is off · enable it to audition':acousticStatus==='loading'?'Loading acoustic model…':acousticStatus==='fallback'?'Acoustic model unavailable · established voice is playing':acousticStatus==='unsupported'?'This engine uses its established voice':'Legacy voice selected'}. Audio must be enabled to audition.</p>
@@ -2030,7 +2085,7 @@ export default function EngineSimulatorV2() {
                       <LabeledSlider label="Serial exhaust silencers" value={acousticHardware.silencerCount} min={0} max={2} step={1} onChange={v=>updateConfig('silencerCount',v)} display={`${acousticHardware.silencerCount} · additional chamber model`} />
                       {!!acousticHardware.silencerCount && <LabeledSlider label="Silencer chamber volume" value={acousticHardware.silencerVolume} min={1} max={25} step={.5} onChange={v=>updateConfig('silencerVolumeL',v)} display={`${fmt(acousticHardware.silencerVolume,1)} L each · estimated`} />}
                       <LabeledSlider label="Flywheel inertia" value={config.flywheelInertiaKgM2??.18} min={.04} max={1} step={.02} onChange={v=>updateConfig('flywheelInertiaKgM2',v)} display={`${fmt(config.flywheelInertiaKgM2??.18,2)} kg·m² · affects Drive`} />
-                      <LabeledSlider label="Idle speed trim" value={config.idleRpm} min={650} max={1200} step={10} onChange={v=>updateConfig('idleRpm',v)} display={`${fmt(resolveIdleRpm(config))} RPM resolved`} />
+                      <LabeledSlider label="Idle speed trim" value={config.idleRpm} min={config.applicationType==='plane'?350:650} max={1200} step={10} onChange={v=>updateConfig('idleRpm',v)} display={`${fmt(resolveIdleRpm(config))} RPM resolved`} />
                       <LabeledSlider label="Exhaust runner length" value={config.exhaustRunnerM??acousticHardware.runners.reduce((a:number,b:number)=>a+b,0)/acousticHardware.cylinders} min={.15} max={1.5} step={.01} onChange={v=>updateConfig('exhaustRunnerM',v)} display={`${fmt(config.exhaustRunnerM??acousticHardware.runners.reduce((a:number,b:number)=>a+b,0)/acousticHardware.cylinders,2)} m · ${config.exhaustRunnerM===undefined?'inferred':'set'}`} />
                       <LabeledSlider label="Collector length" value={config.collectorLengthM??acousticHardware.collector} min={.3} max={3} step={.05} onChange={v=>updateConfig('collectorLengthM',v)} display={`${fmt(config.collectorLengthM??acousticHardware.collector,2)} m · ${config.collectorLengthM===undefined?'inferred':'set'}`} />
                       <LabeledSlider label="Tailpipe length" value={config.tailpipeLengthM??acousticHardware.tailpipe} min={.5} max={5} step={.05} onChange={v=>updateConfig('tailpipeLengthM',v)} display={`${fmt(config.tailpipeLengthM??acousticHardware.tailpipe,2)} m · ${config.tailpipeLengthM===undefined?'inferred':'set'}`} />
@@ -2117,7 +2172,7 @@ export default function EngineSimulatorV2() {
                         dataKey={graphMode === "dyno" ? "rpm" : "time"}
                         allowDataOverflow
                         type="number"
-                        domain={graphMode === "dyno" ? [Math.max(1200, resolveIdleRpm(config)), config.redline] : [liveTimeStart, Math.max(5, lastLiveTime)]}
+                        domain={graphMode === "dyno" ? [(config.applicationType==='plane'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config))), config.redline] : [liveTimeStart, Math.max(5, lastLiveTime)]}
                         tick={{ fill: "#cbd5e1", fontSize: 12 }}
                         tickFormatter={(value) => graphMode === "dyno" ? `${Math.round(value)}` : `${Number(value).toFixed(1)}s`}
                       />
@@ -2176,6 +2231,7 @@ export default function EngineSimulatorV2() {
     </div>
   );
 }
+
 
 
 
