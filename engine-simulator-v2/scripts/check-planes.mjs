@@ -40,6 +40,7 @@ assert.notDeepEqual(render(plane).data[4],render({...plane,propellerBlades:3}).d
 assert.notDeepEqual(render(plane).data[4],render({...plane,propellerRatio:.8}).data[4]);
 assert.notDeepEqual(render(plane).data[0],render({...plane,planeExhaust:'collector'}).data[0]);
 const w=m.configForPreset(m.planePresets.find(p=>p.category==='W'));assert.equal(acousticProfileFor(w).bankCount,3);assert.ok(acousticProfileFor(w).banks.includes(2));
+const silent=new EngineAcousticModel();silent.render(Array.from({length:4},()=>new Float32Array(128)));
 const {OfflineAudioContext,AudioWorkletNode}=await import('node-web-audio-api');
 for(const sr of [32000,48000,96000])for(const layout of ['flat2','radial5','radial7','radial9','radial14','rotary9','w12']){
  const c=m.configForPreset(m.planePresets.find(p=>p.config.engineLayout===layout));

@@ -81,7 +81,7 @@ export class EngineAcousticModel {
   noise(){this.seed=(Math.imul(this.seed,1664525)+1013904223)>>>0;return this.seed/2147483648-1;}
   render(outputs){
     const [exhaust,intake,mechanical,right,propeller]=outputs,n=exhaust.length,p=this.profile,sr=this.sr,t=this.target;
-    if(!t.active && this.active<1e-6){outputs.forEach(channel=>channel.fill(0));return;}
+    if(!t.active && this.active<1e-6){outputs.forEach(channel=>channel?.fill(0));return;}
     const smoothing=1-Math.exp(-1/(sr*.035)),fade=1-Math.exp(-1/(sr*.025)),transitionDecay=Math.exp(-1/(sr*.012));
     const speed=520; // assumed mean exhaust acoustic speed, m/s
     const runnerScale=1;

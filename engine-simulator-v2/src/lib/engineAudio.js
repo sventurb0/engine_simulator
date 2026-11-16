@@ -545,7 +545,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
 
     const sampleBuffers = Object.fromEntries(PRIVATE_AUDIO_SAMPLE_KEYS.map((key) => [key, createProceduralSampleBuffer(ctx, key)]));
     ctxRef.current = ctx;
-    nodesRef.current = { ctx, exhaustBus, intakeBus, blockBus, acousticRoom, acousticRoomSend, blowerOsc, blowerGain, blowerHarmonic, blowerHarmonicGain, master, micHp, micLp, roomSend, roomReturn, exhaustRes, intakeRes, blockRes, turboHiss, turboWhine, intakeWind, mechBed, turboOsc, turboGain, combustionBuffer, oldV8CombustionBuffer, i4CombustionBuffers, noiseBuffer, fxBus, sampleBuffers };
+    nodesRef.current = { ctx, exhaustBus, intakeBus, blockBus, airBus, acousticRoom, acousticRoomSend, blowerOsc, blowerGain, blowerHarmonic, blowerHarmonicGain, master, micHp, micLp, roomSend, roomReturn, exhaustRes, intakeRes, blockRes, turboHiss, turboWhine, intakeWind, mechBed, turboOsc, turboGain, combustionBuffer, oldV8CombustionBuffer, i4CombustionBuffers, noiseBuffer, fxBus, sampleBuffers };
     nextFireTimeRef.current = ctx.currentTime + 0.04;
     patternIndexRef.current = 0;
     audioSmoothRef.current = { ...stateRef.current.point };
@@ -579,7 +579,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
         });
         await nodes.acousticPromise;
         if (!cancelled) setAcousticStatus(nodes.acousticNode && !nodes.acousticFailed ? 'ready' : 'fallback');
-      } catch { if (!cancelled) setAcousticStatus('fallback'); }
+      } catch (error) { console.warn('Component acoustics unavailable',error); if (!cancelled) setAcousticStatus('fallback'); }
     };
     load();
     return () => { cancelled = true; };
