@@ -37,7 +37,7 @@ export function acousticProfileFor(config={}) {
   const valveTiming=valveTimingFor(config);
   const overlap=finite(config.camOverlapDeg,Math.max(0,(cam-.2)*70),0,100);
   const airCleaner=config.airCleaner==='auto'||!config.airCleaner?(config.intakeType==='itb'?'trumpets':'airbox'):config.airCleaner;
-  const intakePipe=finite(config.intakePipeM,.65,.1,2),intakeBore=finite(config.intakeBoreMm,65,30,120),plenum=finite(config.intakePlenumL,disp*.8,.3,8);
+  const intakePipe=finite(config.intakePipeM,.65,.1,2),intakeBore=finite(config.intakeBoreMm,65,30,120),plenum=finite(config.intakePlenumL,disp*.8,.3,plane?40:8);
   const firingPositions=radial||rotary?Array.from({length:cylinders},(_,i)=>config.engineLayout==='radial14'?(i*9)%14:(i*2)%cylinders):null;
   const profile={plane,rotary,radial,firingPositions,bankCount:config.engineLayout==='w12'?3:2,
     openStubs:plane&&config.planeExhaust!=='collector',sleeve:config.sleeveValves===true,

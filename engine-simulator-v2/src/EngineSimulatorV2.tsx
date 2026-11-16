@@ -599,7 +599,7 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     catalyst: coerceOption(config.catalyst,["stock","high_flow","none"] as const,"stock"),
     intakePipeM: Number.isFinite(config.intakePipeM)?clamp(config.intakePipeM!,.1,2):undefined,
     intakeBoreMm: Number.isFinite(config.intakeBoreMm)?clamp(config.intakeBoreMm!,30,120):undefined,
-    intakePlenumL: Number.isFinite(config.intakePlenumL)?clamp(config.intakePlenumL!,.3,8):undefined,
+    intakePlenumL: Number.isFinite(config.intakePlenumL)?clamp(config.intakePlenumL!,.3,config.applicationType==='plane'?40:8):undefined,
     silencerCount: Number.isFinite(config.silencerCount)?Math.round(clamp(config.silencerCount!,0,2)):undefined,
     silencerVolumeL: Number.isFinite(config.silencerVolumeL)?clamp(config.silencerVolumeL!,1,25):undefined,
     intakeCamAdvanceDeg: Number.isFinite(config.intakeCamAdvanceDeg)?clamp(config.intakeCamAdvanceDeg!,0,40):undefined,
@@ -2081,7 +2081,7 @@ export default function EngineSimulatorV2() {
                       {!!config.intakeCamAdvanceDeg && <label>Intake cam advance<select aria-label="Intake cam advance" className={UI.select} value={config.acousticVtcMode??'off'} onChange={e=>updateConfig('acousticVtcMode',e.target.value as SimConfig['acousticVtcMode'])}><option value="off">Base timing</option><option value="on">Advanced {config.intakeCamAdvanceDeg}°</option><option value="auto">Warm loaded sweep approximation</option></select><span className="text-xs text-slate-400">Auto assumes warm engine and moving vehicle; 1050–5700 RPM, estimated load above 50%. Full road-speed, coolant and low-speed ECU logic is not simulated.</span></label>}
                       <LabeledSlider label="Intake pipe length" value={acousticHardware.intakePipe} min={.1} max={2} step={.05} onChange={v=>updateConfig('intakePipeM',v)} display={`${fmt(acousticHardware.intakePipe,2)} m · estimated geometry`} />
                       <LabeledSlider label="Intake pipe bore" value={acousticHardware.intakeBore} min={30} max={120} step={1} onChange={v=>updateConfig('intakeBoreMm',v)} display={`${fmt(acousticHardware.intakeBore)} mm · estimated geometry`} />
-                      <LabeledSlider label="Intake plenum volume" value={acousticHardware.plenum} min={.3} max={8} step={.1} onChange={v=>updateConfig('intakePlenumL',v)} display={`${fmt(acousticHardware.plenum,1)} L · estimated geometry`} />
+                      <LabeledSlider label="Intake plenum volume" value={acousticHardware.plenum} min={.3} max={config.applicationType==='plane'?40:8} step={.1} onChange={v=>updateConfig('intakePlenumL',v)} display={`${fmt(acousticHardware.plenum,1)} L · estimated geometry`} />
                       <LabeledSlider label="Serial exhaust silencers" value={acousticHardware.silencerCount} min={0} max={2} step={1} onChange={v=>updateConfig('silencerCount',v)} display={`${acousticHardware.silencerCount} · additional chamber model`} />
                       {!!acousticHardware.silencerCount && <LabeledSlider label="Silencer chamber volume" value={acousticHardware.silencerVolume} min={1} max={25} step={.5} onChange={v=>updateConfig('silencerVolumeL',v)} display={`${fmt(acousticHardware.silencerVolume,1)} L each · estimated`} />}
                       <LabeledSlider label="Flywheel inertia" value={config.flywheelInertiaKgM2??.18} min={.04} max={1} step={.02} onChange={v=>updateConfig('flywheelInertiaKgM2',v)} display={`${fmt(config.flywheelInertiaKgM2??.18,2)} kg·m² · affects Drive`} />
