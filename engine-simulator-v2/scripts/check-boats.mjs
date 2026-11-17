@@ -34,6 +34,18 @@ for(const preset of m.boatPresets){
  console.log(preset.name+': anchor, cadence, 3 sample rates, mute, persistence PASS');
 }
 const bol=m.configForPreset(m.boatPresets[0]);assert.equal(bol.redline,375);assert.equal(m.resolveIdleRpm(bol),150);assert.equal(bol.flywheelInertiaKgM2,12);
+for(const rpm of [150,375]){
+ const levels={};
+ for(const exhaust of ['wet','dry'])for(const outlet of ['above','submerged']){
+  const c={...bol,redline:rpm,marineExhaust:exhaust,marineOutlet:outlet};
+  const {data}=render(c,48000,3);
+  const tail=data[0].subarray(48000);
+  levels[exhaust+outlet]=rms(tail);
+ }
+ assert.ok(levels.wetabove<levels.dryabove && levels.drysubmerged<levels.dryabove);
+ assert.ok(levels.wetsubmerged<Math.min(levels.wetabove,levels.drysubmerged));
+ console.log('Bracken exhaust RMS at '+rpm+' RPM',levels);
+}
 const two={...bol,marineCombustion:'spark',marineFiring:'even'},four={...two,engineCycle:'four'};
 assert.equal(m.solveDynoPoint(two,375).eventHz,6.25);assert.equal(m.solveDynoPoint(four,375).eventHz,3.125);
 const twin=m.configForPreset(m.boatPresets.find(p=>p.referenceName==='Kelvin-Ricardo F2'));

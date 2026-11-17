@@ -90,7 +90,7 @@ export class EngineAcousticModel {
     this.cylinderMixture=new Float64Array(profile.cylinders);
     this.afterDelay=new Float64Array(profile.cylinders);this.afterEnergy=new Float64Array(profile.cylinders);
     this.valveEnvelope=new Float64Array(profile.cylinders);this.valveDelay=new Float64Array(profile.cylinders);
-    this.valveRing1=0;this.valveRing2=0;this.gearNoise=0;this.shaftDrift=0;this.waterPressure=0;this.waterBurst=0;this.marineLow=[0,0];this.waterLow=0;this.hotKnock=0;
+    this.valveRing1=0;this.valveRing2=0;this.gearNoise=0;this.shaftDrift=0;this.dischargeFlow=0;this.exhaustEnvelope=0;this.marineLow=[0,0];this.waterLow=0;this.hotKnock=0;
     this.lastControlThrottle=0;this.releaseFuel=0;this.afterfireCount=0;
     this.bankBody=Array(profile.bankCount).fill(0);
     this.cylinderTrim=Array.from({length:profile.cylinders},(_,c)=>1+profile.scatter*.6*Math.sin((c+1)*2.3999632297));
@@ -146,8 +146,11 @@ export class EngineAcousticModel {
     const releaseDecay=Math.exp(-1/(sr*.42));
     const gearLp=1-Math.exp(-2*Math.PI*650/sr);
     const bodyLp=1-Math.exp(-2*Math.PI*210/sr);
-    const dischargeDecay=Math.exp(-1/(sr*(p.submerged?.095:.048)));
-    const dischargeThreshold=.35+.12*p.tailpipe+(p.submerged?.25:0);
+    // Water follows the exhaust envelope over several firings at working speed.
+    const flowDecay=Math.exp(-1/(sr*(.18+.04*p.tailpipe)));
+    const flowAttack=1-Math.exp(-1/(sr*.075));
+    const waterCut=1-Math.exp(-2*Math.PI*(p.submerged?760:1400)/sr);
+    const exhaustCut=1-Math.exp(-2*Math.PI*(p.submerged?320:p.wet?950:7000)/sr);
     const valveDecay=Math.exp(-1/(sr*(p.radial?.004:.002)));
     const valveRadius=Math.exp(-1/(sr*.0035)),valveB=valveRadius*valveRadius;
     const valveA=2*valveRadius*Math.cos(2*Math.PI*clamp(1900/Math.sqrt(p.perCylinderL),650,3100)/sr);
@@ -197,11 +200,7 @@ export class EngineAcousticModel {
         this.lastPulseAmplitude=amplitude;
         if(p.marine){
           if(p.wet||p.submerged){
-            this.waterPressure+=amplitude*(p.wet?.48:.27)/Math.sqrt(p.cylinders);
-            if(this.waterPressure>=dischargeThreshold){
-              this.waterPressure%=dischargeThreshold;
-              this.waterBurst=Math.min(1.5,this.waterBurst+.8);
-            }
+            this.dischargeFlow=Math.min(1,this.dischargeFlow+amplitude*.3/Math.sqrt(p.cylinders));
           }
           if(p.hotBulb)this.hotKnock+=amplitude*.7;
         }
@@ -334,15 +333,15 @@ export class EngineAcousticModel {
         this.hotKnock*=Math.exp(-1/(sr*.009));
         mechanical[i]=(p.twoStroke?air*this.hotKnock*.035+this.mechLow*.004:mechanical[i])*(1-p.enclosure*.78)*this.active;
         intake[i]*=1-p.enclosure*.65;
-        this.waterBurst*=dischargeDecay;
-        this.waterLow+=(air-this.waterLow)*(1-Math.exp(-2*Math.PI*420/sr));
-        const bubble=(p.wet||p.submerged)?this.waterLow*this.waterBurst*(.11+.10*this.load)*this.active:0;
-        const cutoff=p.submerged?400:p.wet?1000:7000;
-        const waterLp=1-Math.exp(-2*Math.PI*cutoff/sr);
-        const absorption=p.submerged?.5:p.wet?.82:1;
-        this.marineLow[0]+=(exhaust[i]-this.marineLow[0])*waterLp;
-        exhaust[i]=(this.marineLow[0]*absorption+bubble);
-        if(right){this.marineLow[1]+=(right[i]-this.marineLow[1])*waterLp;right[i]=this.marineLow[1]*absorption+bubble;}
+        this.dischargeFlow*=flowDecay;
+        this.exhaustEnvelope+=(this.dischargeFlow-this.exhaustEnvelope)*flowAttack;
+        this.waterLow+=(air-this.waterLow)*waterCut;
+        // One quiet wash for the outlet. Submersion softens it further.
+        const wash=(p.wet||p.submerged)?this.waterLow*this.exhaustEnvelope*(p.submerged?.008:.014)*this.active:0;
+        const absorption=(p.wet?.68:1)*(p.submerged?.45:1);
+        this.marineLow[0]+=(exhaust[i]-this.marineLow[0])*exhaustCut;
+        exhaust[i]=this.marineLow[0]*absorption+wash;
+        if(right){this.marineLow[1]+=(right[i]-this.marineLow[1])*exhaustCut;right[i]=this.marineLow[1]*absorption+wash;}
       }
       let propSound=0;
       this.propRpm=this.rpm*p.propRatio;this.bladeHz=this.propRpm/60*p.propBlades;
