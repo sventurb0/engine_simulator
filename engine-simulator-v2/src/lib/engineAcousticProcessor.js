@@ -50,7 +50,7 @@ export function acousticProfileFor(config={}) {
   // Intervals in average event units. Paired opposed cylinders fire together;
   // Kelvin 2-1-0-0 gives 180/540 crank degrees across a four-stroke cycle.
   const eventGaps=marine&&cylinders===2?config.marineFiring==='paired'?[2,0]:!twoStroke&&config.marineFiring==='uneven_twin'?[.5,1.5]:null:null;
-  const profile={marine,twoStroke,eventGaps,hotBulb:marine&&config.marineCombustion==='hot_bulb',
+  const profile={car:config.applicationType==='car',marine,twoStroke,eventGaps,hotBulb:marine&&config.marineCombustion==='hot_bulb',
     wet:marine&&config.marineExhaust!=='dry',submerged:marine&&config.marineOutlet==='submerged',enclosure:marine?finite(config.marineEnclosure,.4,0,1):0,
     plane,rotary,radial,firingPositions,bankCount:config.engineLayout==='w12'?3:2,
     openStubs:plane&&config.planeExhaust!=='collector',sleeve:config.sleeveValves===true,
@@ -132,6 +132,8 @@ export class EngineAcousticModel {
     const catalyst=p.catalyst==='none'?1.15:p.catalyst==='high_flow'?1.06:.95;
     const lp=1-Math.exp(-2*Math.PI*p.cutoff*restriction*catalyst/sr),hp=Math.exp(-2*Math.PI*32/sr);
     const slowDecay=Math.exp(-1/(sr*p.pulseMs*.001)),fastDecay=Math.exp(-1/(sr*.00035));
+    // A lightly filled cylinder has a softer pressure front at the same speed.
+    const lightFrontDecay=Math.exp(-1/(sr*.00078)),loadedFrontDecay=Math.exp(-1/(sr*.00030));
     const intakeCutoff=(850+550/p.intakeRunner)*(p.airCleaner==='airbox'?.70:p.airCleaner==='trumpets'?1.3:1);
     const intakeLp=1-Math.exp(-2*Math.PI*intakeCutoff/sr),intakeHp=1-Math.exp(-2*Math.PI*300/sr);
     // Helmholtz approximation: neck area / (plenum volume * effective length).
@@ -194,6 +196,11 @@ export class EngineAcousticModel {
           // at rated power. Texture=0 disables this illustrative unevenness.
           if(this.noise()+1<aircraftIdle*p.scatter*.12)variation*=.45;
         }
+        if(p.car){
+          const runnerBias=p.runners[cylinder]/p.runners[0]-1;
+          const balance=.018*Math.sin((cylinder+1)*2.39996)+.08*runnerBias;
+          variation*=1+balance*p.texture*(1+lope)*(1-.55*this.load);
+        }
         const volume=clamp(Math.sqrt(p.perCylinderL/.55),.65,1.5)*clamp((p.compression/10)**.25,.85,1.18);
         const limiter=!p.plane&&!p.marine&&this.rpm>=p.redline-50 && Math.floor(this.events/p.cylinders)%2===0?0:1;
         const amplitude=(.20+this.load*.80)*this.fuel*variation*volume*limiter*this.blipGain;
@@ -218,7 +225,7 @@ export class EngineAcousticModel {
       }
       let bank0=0,bank1=0,bank2=0,intakeExcitation=0;
       for(let c=0;c<p.cylinders;c++){
-        this.slow[c]*=this.pulseDecay[c]||slowDecay;this.fast[c]*=fastDecay;
+        this.slow[c]*=this.pulseDecay[c]||slowDecay;this.fast[c]*=p.car?lightFrontDecay+(loadedFrontDecay-lightFrontDecay)*this.load:fastDecay;
         // Exhaust blowdown includes turbulent broadband energy. NA high-speed
         // pulses should not be identical electronic waveforms; turbine damping
         // retains the approved turbo combustion character.

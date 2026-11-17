@@ -272,6 +272,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
 
   const getMicProfile = (position = "dyno_room") => {
     switch (position) {
+      case "roadside":
       case "runway": return { exhaust: 1, intake: .32, block: .25, air: .95, room: 0, hp: 35, lp: 9600 };
       case "cockpit": return { exhaust: 0.62, intake: 0.42, block: 0.54, air: 0.28, room: 0.16, hp: 65, lp: 6200 };
       case "engine_bay": return { exhaust: 0.45, intake: 0.78, block: 0.82, air: 0.52, room: 0.10, hp: 45, lp: 8800 };
@@ -490,10 +491,11 @@ export function useEngineAudio(config, point, enabled, throttle) {
     const blockBus = ctx.createGain();
     const airBus = ctx.createGain();
     const fxBus = ctx.createGain();
-    exhaustBus.connect(drive);
-    intakeBus.connect(cleanGain);
-    blockBus.connect(cleanGain);
-    airBus.connect(cleanGain);
+    const roadPaths=[exhaustBus,intakeBus,blockBus,airBus].map((bus,index)=>{
+      const delay=ctx.createDelay(1),gain=ctx.createGain();
+      bus.connect(delay).connect(gain).connect(index===0?drive:cleanGain);
+      return {delay,gain};
+    });
     fxBus.connect(cleanGain);
 
     const exhaustRes = createResonatorBank([95, 240, 620], [1.0, 1.6, 2.4], [0.34, 0.26, 0.16], exhaustBus);
@@ -546,7 +548,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
 
     const sampleBuffers = Object.fromEntries(PRIVATE_AUDIO_SAMPLE_KEYS.map((key) => [key, createProceduralSampleBuffer(ctx, key)]));
     ctxRef.current = ctx;
-    nodesRef.current = { ctx, exhaustBus, intakeBus, blockBus, airBus, acousticRoom, acousticRoomSend, blowerOsc, blowerGain, blowerHarmonic, blowerHarmonicGain, master, micHp, micLp, roomSend, roomReturn, exhaustRes, intakeRes, blockRes, turboHiss, turboWhine, intakeWind, mechBed, turboOsc, turboGain, combustionBuffer, oldV8CombustionBuffer, i4CombustionBuffers, noiseBuffer, fxBus, sampleBuffers };
+    nodesRef.current = { ctx, roadPaths, exhaustBus, intakeBus, blockBus, airBus, acousticRoom, acousticRoomSend, blowerOsc, blowerGain, blowerHarmonic, blowerHarmonicGain, master, micHp, micLp, roomSend, roomReturn, exhaustRes, intakeRes, blockRes, turboHiss, turboWhine, intakeWind, mechBed, turboOsc, turboGain, combustionBuffer, oldV8CombustionBuffer, i4CombustionBuffers, noiseBuffer, fxBus, sampleBuffers };
     nextFireTimeRef.current = ctx.currentTime + 0.04;
     patternIndexRef.current = 0;
     audioSmoothRef.current = { ...stateRef.current.point };
@@ -735,12 +737,33 @@ export function useEngineAudio(config, point, enabled, throttle) {
         if(!useAcoustics && localNodes.acousticWasActive) nextFireTimeRef.current=localCtx.currentTime+.005;
         localNodes.acousticWasActive=Boolean(useAcoustics);
         for (const bank of [localNodes.exhaustRes,localNodes.intakeRes,localNodes.blockRes]) bank.input.gain.setTargetAtTime(legacyLevel,localCtx.currentTime,.025);
+        const roadside=localConfig.applicationType==='car' && localConfig.micPosition==='roadside';
+        const now=localCtx.currentTime;
+        if(localNodes.passSerial!==localConfig.passSerial){
+          localNodes.passSerial=localConfig.passSerial;
+          localNodes.roadStart=undefined;
+          localNodes.flybyStart=undefined;
+        }
+        if(!roadside)localNodes.roadStart=undefined;
+        // A repeated pass at 60 km/h, with a short fade at each distant end.
+        const passTime=roadside?(now-(localNodes.roadStart??=now))%8:0;
+        localNodes.roadPaths.forEach(({delay,gain},index)=>{
+          const offset=index===0?(localConfig.exhaustOffsetM??-1.6):index===2?0:(localConfig.intakeOffsetM??1.4);
+          const along=(passTime-4)*(60/3.6)+offset;
+          const distance=Math.hypot(6,along);
+          const facing=(index===0?along:-along)/distance;
+          const fade=clamp(Math.min(passTime,8-passTime)/.3,0,1);
+          delay.delayTime.setTargetAtTime(roadside?distance/343:0,now,.025);
+          gain.gain.setTargetAtTime(roadside?fade*6/distance*(.78+.22*facing):1,now,.025);
+        });
         if (localNodes.acousticNode) {
           const components=localNodes.acousticComponentId===acousticProfile?.id?undefined:acousticProfile;
           localNodes.acousticComponentId=acousticProfile?.id;
           const manifoldLoad=clamp((targetPoint.mapKpa-30)/75,0,1);
           const shaftLoad=clamp((localConfig.marinePropLoad??1)*(targetPoint.rpm/(localConfig.marineRatedRpm||localConfig.redline))**2,0,1);
-          const engineLoad=localConfig.applicationType==='boat'&&localConfig.marineDrive ? manifoldLoad*(.72+.28*shaftLoad) : manifoldLoad;
+          const engineLoad=localConfig.applicationType==='boat'&&localConfig.marineDrive ? manifoldLoad*(.72+.28*shaftLoad) : localConfig.applicationType==='car'
+            ? clamp(manifoldLoad*(.6+.4*(targetPoint.ve??1))*.84+.16*clamp((targetPoint.mapKpa-100)/100,0,1),0,1)
+            : manifoldLoad;
           localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),components,rpm:targetPoint.rpm,throttle:localThrottle,load:engineLoad,rotaryBlip:localConfig.rotaryBlip,airspeed:(localConfig.vehicleSpeedKph??0)/3.6,header:localConfig.headerType,exhaust:localConfig.exhaustType});
           const levels=[micProfile.exhaust*(1.5+localConfig.engineLoudness*.85),micProfile.intake*(.7+localConfig.engineLoudness*.3),micProfile.block,micProfile.air*2];
           const flyby=localConfig.applicationType==='plane'&&localConfig.micPosition==='runway';

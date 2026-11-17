@@ -37,7 +37,7 @@ type TurboBearing = "journal" | "ball";
 type TurbineAR = "small" | "medium" | "large";
 type IntercoolerType = "none" | "sidemount" | "small_fmic" | "large_fmic" | "water_air";
 type V8CrankType = "crossplane" | "flatplane";
-type MicPosition = "dyno_room" | "cockpit" | "engine_bay" | "intake_side" | "rear_exhaust" | "runway";
+type MicPosition = "dyno_room" | "cockpit" | "engine_bay" | "intake_side" | "rear_exhaust" | "runway" | "roadside";
 type GraphMode = "live" | "dyno";
 type GraphPage = "power" | "diagnostics";
 type DiagnosticMetricKey = "vePct" | "mapKpa" | "chargeTempC" | "airLbMin" | "injectorCc" | "compressorEffPct" | "densityRatio" | "bmepPsi" | "targetAfr" | "pr" | "eventHz";
@@ -113,6 +113,8 @@ export type SimConfig = {
   altitude: number;
   ambientTemp: number;
   humidity: number;
+  intakeOffsetM?: number;
+  exhaustOffsetM?: number;
   vehicleSpeedKph: number;
   dynoRollerInertia: number;
   dynoBrakeLoad: number;
@@ -657,6 +659,8 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     chargeReleaseMode: coerceOption(config.chargeReleaseMode, chargeReleaseValues, defaultConfig.chargeReleaseMode),
     firingSoundMode: coerceOption(config.firingSoundMode, firingModeValues, defaultConfig.firingSoundMode),
     intercoolerType: coerceOption(config.intercoolerType, intercoolerValues, defaultConfig.intercoolerType),
+    intakeOffsetM: Number.isFinite(config.intakeOffsetM)?clamp(config.intakeOffsetM!,-2.5,2.5):1.4,
+    exhaustOffsetM: Number.isFinite(config.exhaustOffsetM)?clamp(config.exhaustOffsetM!,-2.5,2.5):-1.6,
     micPosition: coerceOption(config.micPosition, micValues, defaultConfig.micPosition),
     valvesPerCylinder: [1, 2, 3, 4, 5].includes(config.valvesPerCylinder as number) ? (config.valvesPerCylinder as 1 | 2 | 3 | 4 | 5) : defaultConfig.valvesPerCylinder,
     cinemaMode: typeof config.cinemaMode === "boolean" ? config.cinemaMode : defaultConfig.cinemaMode,
@@ -740,7 +744,7 @@ const blowerValues = ["roots", "twinscrew", "centrifugal"] as const;
 const chargeReleaseValues = ["none", "recirc", "dump"] as const;
 const firingModeValues = ["stock", "even", "crossplane_i4", "bigbang_i4", "cp3_triple", "bigbang_v4", "oddfire_v6", "lopey_v8"] as const;
 const intercoolerValues = ["none", "sidemount", "small_fmic", "large_fmic", "water_air"] as const;
-const micValues = ["dyno_room", "cockpit", "engine_bay", "intake_side", "rear_exhaust", "runway"] as const;
+const micValues = ["dyno_room", "cockpit", "engine_bay", "intake_side", "rear_exhaust", "runway", "roadside"] as const;
 
 function coerceOption<T extends string>(value: unknown, options: readonly T[], fallback: T) {
   return typeof value === "string" && (options as readonly string[]).includes(value) ? (value as T) : fallback;
@@ -1338,6 +1342,9 @@ export default function EngineSimulatorV2() {
   const [graphPage, setGraphPage] = useState<GraphPage>("power");
   const [diagLeftMetric, setDiagLeftMetric] = useState<DiagnosticMetricKey>("vePct");
   const [diagRightMetric, setDiagRightMetric] = useState<DiagnosticMetricKey>("mapKpa");
+  const [passSerial,setPassSerial]=useState(0);
+  const [holdSpeed,setHoldSpeed]=useState(false);
+  const [holdRpm,setHoldRpm]=useState(2500);
   const [running, setRunning] = useState(true);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [tab, setTab] = useState<ControlTab>(startInBoats?"boats":startInPlanes?"planes":"library");
@@ -1386,7 +1393,7 @@ export default function EngineSimulatorV2() {
   const userPresets = useMemo(() => filteredPresets.filter((p) => p.group === "saved" && p.config.applicationType!=='plane'&&p.config.applicationType!=='boat'), [filteredPresets]);
 
   const acousticHardware = useMemo(()=>acousticProfileFor({...config,acousticIdleRpm:resolveIdleRpm(config)}),[config]);
-  const { ensureAudio, acousticStatus } = useEngineAudio({...config,marineDrive:graphMode==="live",acousticIdleRpm:resolveIdleRpm(config)}, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
+  const { ensureAudio, acousticStatus } = useEngineAudio({...config,passSerial,marineDrive:graphMode==="live",acousticIdleRpm:resolveIdleRpm(config)}, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
 
   useEffect(() => {
     runRuntimeSelfChecks();
@@ -1439,12 +1446,15 @@ export default function EngineSimulatorV2() {
       liveSimulationTimeRef.current += steps/120;
       setRuntime(prev=>{
         let next=prev;
-        for(let i=0;i<steps;i++) next=stepRuntime(config,next,liveThrottleTarget,1/120);
+        for(let i=0;i<steps;i++) {
+          next=stepRuntime(config,next,liveThrottleTarget,1/120);
+          if(holdSpeed)next.rpm=clamp(holdRpm,resolveIdleRpm(config),config.redline-25);
+        }
         return next;
       });
     },1000/60);
     return ()=>window.clearInterval(id);
-  },[config,running,graphMode,liveThrottleTarget]);
+  },[config,running,graphMode,liveThrottleTarget,holdSpeed,holdRpm]);
 
   useEffect(() => {
     if (graphMode!=='live' || !running) return;
@@ -1496,13 +1506,14 @@ export default function EngineSimulatorV2() {
   const lastLiveTime = useMemo(() => Number((liveTrace[liveTrace.length - 1]?.time ?? 0).toFixed(2)), [liveTrace]);
   const liveTimeStart = useMemo(() => Math.max(0, lastLiveTime - 5), [lastLiveTime]);
 
-  const applyPreset = (preset: EnginePreset) => {
+  const applyPreset = (preset: EnginePreset, compare=audioEnabled && graphMode==='live') => {
     const nextConfig = configForPreset(preset);
+    if(compare && nextConfig.applicationType===config.applicationType) nextConfig.micPosition=config.micPosition;
     setConfig(nextConfig);
-    setRuntime({ ...defaultRuntime, rpm: resolveIdleRpm(nextConfig), throttle: 0 });
-    setLiveThrottleTarget(0);
+    setRuntime({ ...defaultRuntime, rpm: compare?clamp(runtime.rpm,resolveIdleRpm(nextConfig),nextConfig.redline-25):resolveIdleRpm(nextConfig), throttle: compare?runtime.throttle:0 });
+    if(!compare)setLiveThrottleTarget(0);
     lastLiveTraceSampleRef.current = 0; liveSimulationTimeRef.current = 0;
-    setGraphMode("dyno");
+    setGraphMode(compare?"live":"dyno");
     setSweepRunning(false);
     setGraphPage("power");
     setSweepCursor(nextConfig.applicationType==='car'?Math.max(1200, resolveIdleRpm(nextConfig)):resolveIdleRpm(nextConfig));
@@ -1594,6 +1605,10 @@ export default function EngineSimulatorV2() {
     setCopyStatus("downloaded");
   };
 
+  const comparisonPresets=useMemo(()=>allPresets.filter(p=>(p.config.applicationType??(p.group==='boat'||p.group==='plane'?p.group:'car'))===config.applicationType),[allPresets,config.applicationType]);
+  const compareIndex=comparisonPresets.findIndex(p=>p.name===config.gameMeta?.name);
+  const stepEngine=(direction:number)=>applyPreset(comparisonPresets[(Math.max(0,compareIndex)+direction+comparisonPresets.length)%comparisonPresets.length],true);
+  const listenerLabels={dyno_room:'Dyno room',cockpit:'Cockpit',engine_bay:'Engine bay',intake_side:'Intake side',rear_exhaust:'Rear exhaust',roadside:'Roadside',runway:'Runway flyby'};
   const runSweep = async () => {
     setGraphMode("dyno");
     setGraphPage("power");
@@ -1612,7 +1627,27 @@ export default function EngineSimulatorV2() {
             <CardHeader className="shrink-0 border-b border-slate-700/60 !pb-4">
               <div className="text-[10px] uppercase tracking-[0.25em] text-sky-400">Apex · Engine laboratory</div>
               <CardTitle className={UI.title}>{config.gameMeta?.name ?? 'Custom engine'}</CardTitle>
-              <div className="text-xs text-slate-400">{sweepRunning ? (config.applicationType==='boat'?'Marine bench sweep · estimated performance':config.applicationType==='plane'?'Aircraft bench sweep · estimated performance':'Full-load reference sweep · optimal mixture / estimated MBT') : 'Choose an engine, tune it, then run a sweep.'}</div>
+              <div className="grid gap-2 rounded-xl border border-slate-700 bg-slate-950/70 p-3">
+                <div className="flex items-end gap-1"><label className="grid min-w-0 flex-1 gap-1 text-xs text-slate-300">Compare engines
+                  <select className="w-full rounded bg-slate-800 p-2 text-sm" value={compareIndex} onChange={e=>{const p=comparisonPresets[Number(e.target.value)];if(p)applyPreset(p,true)}}>
+                    <option disabled value={-1}>Custom setup</option>
+                    {comparisonPresets.map((p,i)=><option key={i} value={i}>{p.name}</option>)}
+                  </select>
+                </label>
+                  <button className="rounded bg-slate-800 px-3 py-1.5" aria-label="Previous engine" onClick={()=>stepEngine(-1)}>‹</button>
+                  <button className="rounded bg-slate-800 px-3 py-1.5" aria-label="Next engine" onClick={()=>stepEngine(1)}>›</button>
+                </div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="grid flex-1 gap-1 text-xs text-slate-300">Listener
+                    <select className="rounded bg-slate-800 p-2 text-sm" value={config.micPosition} onChange={e=>updateConfig('micPosition',e.target.value as MicPosition)}>
+                      {Object.entries(listenerLabels).filter(([k])=>k!=='roadside'&&k!=='runway'||k===(config.applicationType==='plane'?'runway':config.applicationType==='car'?'roadside':'')).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+                    </select>
+                  </label>
+                  {config.applicationType!=='boat'&&<Button className={UI.buttonPrimary} onClick={async()=>{if(!await ensureAudio())return;setAudioEnabled(true);setRunning(true);setSweepRunning(false);setGraphMode('live');updateConfig('micPosition',config.applicationType==='plane'?'runway':'roadside');setPassSerial(n=>n+1)}}>{config.applicationType==='plane'?'Fly past':'Drive past'}</Button>}
+                </div>
+                <label className="flex items-center gap-2 text-xs">Throttle <input className="min-w-0 flex-1" type="range" min={0} max={100} value={Math.round(liveThrottleTarget*100)} onChange={e=>updateRuntime('throttle',Number(e.target.value)/100)}/>{Math.round(liveThrottleTarget*100)}%</label>
+                <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={holdSpeed} onChange={e=>{setHoldSpeed(e.target.checked);setGraphMode('live');setSweepRunning(false)}}/>Hold RPM {holdSpeed&&<input aria-label="Held engine speed" className="w-20 rounded bg-slate-800 px-2" type="number" min={resolveIdleRpm(config)} max={config.redline-25} step={25} value={holdRpm} onChange={e=>setHoldRpm(Number(e.target.value))}/>}<span className="ml-auto tabular-nums">{Math.round(runtime.rpm)} rpm</span></label>
+              </div>
               <div className="grid grid-cols-[1fr_auto] gap-2 pt-2">
                 <Button className={`${UI.buttonPrimary} !h-12`} onClick={() => sweepRunning ? setSweepRunning(false) : void runSweep()}>
                   <Gauge className="h-4 w-4" /> {sweepRunning ? 'Stop dyno' : 'Run dyno'}
@@ -1632,7 +1667,7 @@ export default function EngineSimulatorV2() {
                 <ControlTabButton active={tab === 'audio'} onClick={() => setTab('audio')}>Sound</ControlTabButton>
               </div>
             </CardHeader>
-            <CardContent className="min-h-0 grid gap-4 overflow-y-auto !pt-4 lg:max-h-[calc(100vh-20rem)]">
+            <CardContent className="min-h-0 grid gap-4 overflow-y-auto !pt-4 lg:flex-1">
               {tab==='boats' && <div className="grid gap-4">
                 <div><h3 className="font-semibold text-sky-300">Boats · engines through 1929</h3><p className="mt-2 text-xs text-slate-400">20 game engines based on produced marine engines and period aircraft conversions. Select an engine, enable Audio, then use Drive to hear it under propeller load.</p></div>
                 <input aria-label="Find a boat engine" placeholder="Search game name, historical engine or type…" className={UI.select} value={boatSearch} onChange={e=>setBoatSearch(e.target.value)}/>
@@ -2155,6 +2190,7 @@ export default function EngineSimulatorV2() {
                       <SelectTrigger className={UI.select}><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="dyno_room">Dyno room</SelectItem>
+                        {config.applicationType==="car" && <SelectItem value="roadside">Roadside</SelectItem>}
                         {config.applicationType==="plane" && <SelectItem value="runway">Runway flyby</SelectItem>}
                         <SelectItem value="cockpit">Cockpit</SelectItem>
                         <SelectItem value="engine_bay">Engine bay</SelectItem>
@@ -2163,6 +2199,10 @@ export default function EngineSimulatorV2() {
                       </SelectContent>
                     </Select>
                   </div>
+                  {config.applicationType==='car'&&<details className="text-xs text-slate-300"><summary className="cursor-pointer">Roadside source positions</summary><p className="my-2">Distance from the centre of the car. Positive values are towards the nose.</p>
+                    <LabeledSlider label="Intake position" value={config.intakeOffsetM??1.4} min={-2.5} max={2.5} step={.1} onChange={v=>updateConfig('intakeOffsetM',v)} display={`${config.intakeOffsetM??1.4} m`}/>
+                    <LabeledSlider label="Tailpipe position" value={config.exhaustOffsetM??-1.6} min={-2.5} max={2.5} step={.1} onChange={v=>updateConfig('exhaustOffsetM',v)} display={`${config.exhaustOffsetM??-1.6} m`}/>
+                  </details>}
                   <details className="text-xs text-slate-400"><summary className="cursor-pointer">Reference listening checklist</summary><p className="mt-2">Use the same headphones and microphone position for both models. Compare a warm engine at idle, steady 2000/4000 RPM, a loaded sweep and closed-throttle coast-down. Free revving is a separate reference from an on-load dyno pull. Match playback loudness before judging tone. No reference recordings are bundled or claimed as validation; a recording of your own B234R is the best first comparison.</p></details>
                   <LabeledSlider label="Engine loudness" value={config.engineLoudness * 100} onChange={(v) => updateConfig("engineLoudness", v / 100)} min={20} max={160} display={`${fmt(config.engineLoudness * 100, 0)} %`} />
                   <LabeledSlider label="Turbo loudness" value={config.turboLoudness * 100} onChange={(v) => updateConfig("turboLoudness", v / 100)} min={0} max={220} display={`${fmt(config.turboLoudness * 100, 0)} %`} />
