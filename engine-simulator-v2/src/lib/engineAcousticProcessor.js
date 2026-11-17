@@ -90,7 +90,7 @@ export class EngineAcousticModel {
     this.cylinderMixture=new Float64Array(profile.cylinders);
     this.afterDelay=new Float64Array(profile.cylinders);this.afterEnergy=new Float64Array(profile.cylinders);
     this.valveEnvelope=new Float64Array(profile.cylinders);this.valveDelay=new Float64Array(profile.cylinders);
-    this.valveRing1=0;this.valveRing2=0;this.gearNoise=0;this.shaftDrift=0;this.waterPressure=0;this.marineLow=[0,0];this.waterLow=0;this.hotKnock=0;
+    this.valveRing1=0;this.valveRing2=0;this.gearNoise=0;this.shaftDrift=0;this.waterPressure=0;this.waterBurst=0;this.marineLow=[0,0];this.waterLow=0;this.hotKnock=0;
     this.lastControlThrottle=0;this.releaseFuel=0;this.afterfireCount=0;
     this.bankBody=Array(profile.bankCount).fill(0);
     this.cylinderTrim=Array.from({length:profile.cylinders},(_,c)=>1+profile.scatter*.6*Math.sin((c+1)*2.3999632297));
@@ -146,6 +146,8 @@ export class EngineAcousticModel {
     const releaseDecay=Math.exp(-1/(sr*.42));
     const gearLp=1-Math.exp(-2*Math.PI*650/sr);
     const bodyLp=1-Math.exp(-2*Math.PI*210/sr);
+    const dischargeDecay=Math.exp(-1/(sr*(p.submerged?.095:.048)));
+    const dischargeThreshold=.35+.12*p.tailpipe+(p.submerged?.25:0);
     const valveDecay=Math.exp(-1/(sr*(p.radial?.004:.002)));
     const valveRadius=Math.exp(-1/(sr*.0035)),valveB=valveRadius*valveRadius;
     const valveA=2*valveRadius*Math.cos(2*Math.PI*clamp(1900/Math.sqrt(p.perCylinderL),650,3100)/sr);
@@ -193,7 +195,16 @@ export class EngineAcousticModel {
         const limiter=!p.plane&&!p.marine&&this.rpm>=p.redline-50 && Math.floor(this.events/p.cylinders)%2===0?0:1;
         const amplitude=(.20+this.load*.80)*this.fuel*variation*volume*limiter*this.blipGain;
         this.lastPulseAmplitude=amplitude;
-        if(p.marine){this.waterPressure+=amplitude/Math.sqrt(p.cylinders)*.15;if(p.hotBulb)this.hotKnock+=amplitude*.7;}
+        if(p.marine){
+          if(p.wet||p.submerged){
+            this.waterPressure+=amplitude*(p.wet?.48:.27)/Math.sqrt(p.cylinders);
+            if(this.waterPressure>=dischargeThreshold){
+              this.waterPressure%=dischargeThreshold;
+              this.waterBurst=Math.min(1.5,this.waterBurst+.8);
+            }
+          }
+          if(p.hotBulb)this.hotKnock+=amplitude*.7;
+        }
         if(!p.turbo)this.pulseDecay[cylinder]=Math.exp(-1/(sr*p.pulseMs*.001*(1+this.noise()*(p.aircraftSource?.22:.06)*p.texture)));
         if(p.aircraftSource&&!p.twoStroke){
           this.valveDelay[cylinder]=sr*60/Math.max(350,this.rpm)*.65;
@@ -312,7 +323,7 @@ export class EngineAcousticModel {
         const ring=(1-valveB)*impact+valveA*this.valveRing1-valveB*this.valveRing2;
         this.valveRing2=this.valveRing1;this.valveRing1=ring;
         this.gearNoise+=(air-this.gearNoise)*gearLp;
-        const exposure=p.radial||p.rotary?1.8:p.valvetrain==='ohv'?1.1:.65;
+        const exposure=p.radial?1.8+.85*aircraftIdle:p.rotary?1.8:p.valvetrain==='ohv'?1.1:.65;
         aircraftMechanical=(impact*.019+ring*.045)*exposure*(.5+.5*p.texture);
         // A quiet gear mesh with broadband tooth contact, not a pure siren.
         drive=drive*.22+this.gearNoise*(p.camDrive==='gear'?.003:0);
@@ -323,9 +334,9 @@ export class EngineAcousticModel {
         this.hotKnock*=Math.exp(-1/(sr*.009));
         mechanical[i]=(p.twoStroke?air*this.hotKnock*.035+this.mechLow*.004:mechanical[i])*(1-p.enclosure*.78)*this.active;
         intake[i]*=1-p.enclosure*.65;
-        this.waterPressure*=Math.exp(-1/(sr*.075));
+        this.waterBurst*=dischargeDecay;
         this.waterLow+=(air-this.waterLow)*(1-Math.exp(-2*Math.PI*420/sr));
-        const bubble=(p.wet||p.submerged)?this.waterLow*Math.min(1,this.waterPressure)*(.035+.06*this.load)*this.active:0;
+        const bubble=(p.wet||p.submerged)?this.waterLow*this.waterBurst*(.11+.10*this.load)*this.active:0;
         const cutoff=p.submerged?400:p.wet?1000:7000;
         const waterLp=1-Math.exp(-2*Math.PI*cutoff/sr);
         const absorption=p.submerged?.5:p.wet?.82:1;
@@ -342,8 +353,10 @@ export class EngineAcousticModel {
         const fraction=clamp(this.rpm/p.redline,0,1.2),loading=.15+.85*this.throttle;
         const noise=this.noise();
         this.propNoiseLow+=(noise-this.propNoiseLow)*(1-Math.exp(-2*Math.PI*(350+Math.min(tipMach,1.3)*3500)/sr));
+        const angle=2*Math.PI*this.propPhase;
         const blade=Math.sin(2*Math.PI*this.propPhase)+.3*Math.sin(4*Math.PI*this.propPhase);
-        propSound=(blade*.055+this.propNoiseLow*(.025+.13*clamp((tipMach-.6)/.4,0,1)))*fraction*fraction*loading*p.propLevel*this.active;
+        const bladeWake=p.aircraftBank&&p.cylinders===12 ? .45+.9*(.5+.5*Math.cos(angle))**3 : 1;
+        propSound=(blade*.055+bladeWake*this.propNoiseLow*(.025+.13*clamp((tipMach-.6)/.4,0,1)))*fraction*fraction*loading*p.propLevel*this.active;
       }
       this.transitionP*=transitionDecay;
       // With the older four-channel API the intake transition already contains

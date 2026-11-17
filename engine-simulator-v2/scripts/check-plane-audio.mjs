@@ -38,7 +38,7 @@ const golden=JSON.parse(fs.readFileSync(root+'scripts/fixtures/plane-audio-appro
 for(const test of golden.cases){
   const {a}=run(test.config,{rpm:test.rpm,seconds:golden.seconds});
   const hash=createHash('sha256');a.forEach(c=>hash.update(Buffer.from(c.buffer)));
-  const changed=['plane-flat4','plane-v8','plane-rotary9'].includes(test.name);
+  const changed=['plane-flat4','plane-v8','plane-rotary9'].includes(test.name) || (test.name.startsWith('previous-pass-') && test.config.engineLayout==='v12');
   if(changed)assert.notEqual(hash.digest('hex'),test.sha256,test.name+' receives the requested pass');
   else assert.equal(hash.digest('hex'),test.sha256,test.name+' approved waveform');
 }

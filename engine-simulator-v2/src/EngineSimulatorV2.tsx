@@ -37,7 +37,7 @@ type TurboBearing = "journal" | "ball";
 type TurbineAR = "small" | "medium" | "large";
 type IntercoolerType = "none" | "sidemount" | "small_fmic" | "large_fmic" | "water_air";
 type V8CrankType = "crossplane" | "flatplane";
-type MicPosition = "dyno_room" | "cockpit" | "engine_bay" | "intake_side" | "rear_exhaust";
+type MicPosition = "dyno_room" | "cockpit" | "engine_bay" | "intake_side" | "rear_exhaust" | "runway";
 type GraphMode = "live" | "dyno";
 type GraphPage = "power" | "diagnostics";
 type DiagnosticMetricKey = "vePct" | "mapKpa" | "chargeTempC" | "airLbMin" | "injectorCc" | "compressorEffPct" | "densityRatio" | "bmepPsi" | "targetAfr" | "pr" | "eventHz";
@@ -740,7 +740,7 @@ const blowerValues = ["roots", "twinscrew", "centrifugal"] as const;
 const chargeReleaseValues = ["none", "recirc", "dump"] as const;
 const firingModeValues = ["stock", "even", "crossplane_i4", "bigbang_i4", "cp3_triple", "bigbang_v4", "oddfire_v6", "lopey_v8"] as const;
 const intercoolerValues = ["none", "sidemount", "small_fmic", "large_fmic", "water_air"] as const;
-const micValues = ["dyno_room", "cockpit", "engine_bay", "intake_side", "rear_exhaust"] as const;
+const micValues = ["dyno_room", "cockpit", "engine_bay", "intake_side", "rear_exhaust", "runway"] as const;
 
 function coerceOption<T extends string>(value: unknown, options: readonly T[], fallback: T) {
   return typeof value === "string" && (options as readonly string[]).includes(value) ? (value as T) : fallback;
@@ -1386,7 +1386,7 @@ export default function EngineSimulatorV2() {
   const userPresets = useMemo(() => filteredPresets.filter((p) => p.group === "saved" && p.config.applicationType!=='plane'&&p.config.applicationType!=='boat'), [filteredPresets]);
 
   const acousticHardware = useMemo(()=>acousticProfileFor({...config,acousticIdleRpm:resolveIdleRpm(config)}),[config]);
-  const { ensureAudio, acousticStatus } = useEngineAudio({...config,acousticIdleRpm:resolveIdleRpm(config)}, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
+  const { ensureAudio, acousticStatus } = useEngineAudio({...config,marineDrive:graphMode==="live",acousticIdleRpm:resolveIdleRpm(config)}, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
 
   useEffect(() => {
     runRuntimeSelfChecks();
@@ -2155,6 +2155,7 @@ export default function EngineSimulatorV2() {
                       <SelectTrigger className={UI.select}><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="dyno_room">Dyno room</SelectItem>
+                        {config.applicationType==="plane" && <SelectItem value="runway">Runway flyby</SelectItem>}
                         <SelectItem value="cockpit">Cockpit</SelectItem>
                         <SelectItem value="engine_bay">Engine bay</SelectItem>
                         <SelectItem value="intake_side">Intake side</SelectItem>

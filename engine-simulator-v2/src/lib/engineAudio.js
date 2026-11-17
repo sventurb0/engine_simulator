@@ -272,6 +272,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
 
   const getMicProfile = (position = "dyno_room") => {
     switch (position) {
+      case "runway": return { exhaust: 1, intake: .32, block: .25, air: .95, room: 0, hp: 35, lp: 9600 };
       case "cockpit": return { exhaust: 0.62, intake: 0.42, block: 0.54, air: 0.28, room: 0.16, hp: 65, lp: 6200 };
       case "engine_bay": return { exhaust: 0.45, intake: 0.78, block: 0.82, air: 0.52, room: 0.10, hp: 45, lp: 8800 };
       case "intake_side": return { exhaust: 0.34, intake: 0.96, block: 0.48, air: 0.74, room: 0.10, hp: 55, lp: 9600 };
@@ -572,7 +573,9 @@ export function useEngineAudio(config, point, enabled, throttle) {
           if (ctxRef.current !== ctx) return;
           const node = new window.AudioWorkletNode(ctx, 'apex-engine-acoustics', {numberOfInputs:0, numberOfOutputs:4, outputChannelCount:[2,1,1,1]});
           nodes.acousticGains = [nodes.exhaustBus,nodes.intakeBus,nodes.blockBus,nodes.airBus].map((bus,index) => {
-            const gain = ctx.createGain();gain.gain.value=0;node.connect(gain,index,0);gain.connect(bus);return gain;
+            const gain = ctx.createGain();gain.gain.value=0;node.connect(gain,index,0);const delay=ctx.createDelay(1);
+            (nodes.propagationDelays??=[]).push(delay);
+            gain.connect(delay);delay.connect(bus);return gain;
           });
           node.onprocessorerror = () => { nodes.acousticFailed=true;setAcousticStatus('fallback'); };
           nodes.acousticNode = node;
@@ -735,8 +738,25 @@ export function useEngineAudio(config, point, enabled, throttle) {
         if (localNodes.acousticNode) {
           const components=localNodes.acousticComponentId===acousticProfile?.id?undefined:acousticProfile;
           localNodes.acousticComponentId=acousticProfile?.id;
-          localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),components,rpm:targetPoint.rpm,throttle:localThrottle,load:clamp((targetPoint.mapKpa-30)/75,0,1),rotaryBlip:localConfig.rotaryBlip,airspeed:(localConfig.vehicleSpeedKph??0)/3.6,header:localConfig.headerType,exhaust:localConfig.exhaustType});
+          const manifoldLoad=clamp((targetPoint.mapKpa-30)/75,0,1);
+          const shaftLoad=clamp((localConfig.marinePropLoad??1)*(targetPoint.rpm/(localConfig.marineRatedRpm||localConfig.redline))**2,0,1);
+          const engineLoad=localConfig.applicationType==='boat'&&localConfig.marineDrive ? manifoldLoad*(.72+.28*shaftLoad) : manifoldLoad;
+          localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),components,rpm:targetPoint.rpm,throttle:localThrottle,load:engineLoad,rotaryBlip:localConfig.rotaryBlip,airspeed:(localConfig.vehicleSpeedKph??0)/3.6,header:localConfig.headerType,exhaust:localConfig.exhaustType});
           const levels=[micProfile.exhaust*(1.5+localConfig.engineLoudness*.85),micProfile.intake*(.7+localConfig.engineLoudness*.3),micProfile.block,micProfile.air*2];
+          const flyby=localConfig.applicationType==='plane'&&localConfig.micPosition==='runway';
+          // Circular demonstration flight past a stationary listener. The changing
+          // propagation delay supplies Doppler once, independently of source RPM.
+          const now=localCtx.currentTime;
+          if(!flyby)localNodes.flybyStart=undefined;
+          const elapsed=flyby?now-(localNodes.flybyStart??=now):0;
+          const angle=elapsed*.52;
+          const distance=flyby?Math.hypot(80*Math.sin(angle),100+80*Math.cos(angle)):0;
+          if(flyby){
+            const gain=20/distance;
+            levels.forEach((level,i)=>levels[i]=level*gain);
+            levels[3]*=.9+.3*Math.sin(angle);
+          }
+          localNodes.propagationDelays.forEach(delay=>delay.delayTime.setTargetAtTime(distance/343,now,.025));
           localNodes.acousticGains.forEach((gain,index)=>gain.gain.setTargetAtTime(useAcoustics?levels[index]:0,localCtx.currentTime,.025));
         }
         if(useAcoustics && localNodes.acousticRoomPosition !== localConfig.micPosition){localNodes.acousticRoom.buffer=acousticRoomBuffer(localCtx,localConfig.micPosition);localNodes.acousticRoomPosition=localConfig.micPosition;}
