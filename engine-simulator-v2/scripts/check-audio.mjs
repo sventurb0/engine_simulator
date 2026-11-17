@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {OfflineAudioContext,AudioWorkletNode} from 'node-web-audio-api';
 const root=new URL('../',import.meta.url).pathname;
 const out=root+'node_modules/.cache/audio-check.mjs';
-await build({stdin:{contents:`export {useEngineAudio} from './lib/engineAudio.js';export {turboVoice,blowerVoice,releaseVoice,recoverFireTime} from './lib/engineAudioDynamics.js';export {smoothStep} from './lib/engineAudioPrimitives.ts';export {planePresets} from './data/planeEngines.ts';`,resolveDir:root+'src',loader:'js'},bundle:true,platform:'node',format:'esm',outfile:out,alias:{react:root+'scripts/fixtures/audio-react.mjs'}});
+await build({stdin:{contents:`export {useEngineAudio} from './lib/engineAudio.js';export {turboVoice,blowerVoice,releaseVoice,recoverFireTime} from './lib/engineAudioDynamics.js';export {smoothStep} from './lib/engineAudioPrimitives.ts';export {planePresets} from './data/planeEngines.ts';export {boatPresets} from './data/boatEngines.ts';`,resolveDir:root+'src',loader:'js'},bundle:true,platform:'node',format:'esm',outfile:out,alias:{react:root+'scripts/fixtures/audio-react.mjs'}});
 const m=await import(out);
 assert.equal(m.smoothStep(.2,.04,.2),1);assert.equal(m.smoothStep(.38,.08,.38),1);assert.ok(Math.abs(m.smoothStep(.12,.04,.2)-.5)<1e-12);
 assert.equal(m.recoverFireTime(1,10),10.005);assert.equal(m.recoverFireTime(10.1,10),10.1);
@@ -63,10 +63,11 @@ await renderHook(base,p,.8,false);await renderHook(base,p,.8,true);clock+=.1;tim
 // Exercise the production hook's worklet construction and all four bus connections.
 // Native processor-only tests cannot catch a missing bus on nodesRef.current.
 window.AudioWorkletNode=function(_context,name,options){return new AudioWorkletNode(native,name,options);};
-for(const layout of ['i4','radial9','radial14','v12','flat4','v4','v8','rotary9']){
+for(const layout of ['i4','radial9','radial14','v12','flat4','v4','v8','rotary9','marine_single','marine_twin','marine_v12','marine_w12']){
 reset();
-const preset=m.planePresets.find(p=>p.config.engineLayout===(layout==='v4'?'v8':layout));
-const aircraftConfig={...base,...preset.config,engineLayout:layout,engineLoudness:2,propellerLoudness:1.5,superchargerLoudness:1.8,roomSize:1};
+const marine=layout.startsWith('marine_');
+const preset=marine?m.boatPresets.find(p=>p.config.engineLayout===({marine_single:'single',marine_twin:'i2',marine_v12:'v12',marine_w12:'w12'})[layout]):m.planePresets.find(p=>p.config.engineLayout===(layout==='v4'?'v8':layout));
+const aircraftConfig={...base,...preset.config,engineLayout:marine?preset.config.engineLayout:layout,engineLoudness:2,propellerLoudness:1.5,superchargerLoudness:1.8,roomSize:1};
 await renderHook(aircraftConfig, {...p,rpm:aircraftConfig.redline},1);
 let acoustic;
 for(let i=0;i<200;i++){acoustic=refs.find(ref=>ref.current?.acousticNode)?.current;if(acoustic)break;await new Promise(resolve=>setTimeout(resolve,10));}
@@ -78,7 +79,7 @@ assert.ok(aircraftPeak>.001&&aircraftPeak<.98,'production aircraft mix has headr
 acoustic.acousticNode.port.close();console.log(layout+' production aircraft worklet: peak '+aircraftPeak.toFixed(4));
 }
 delete window.AudioWorkletNode;
-console.log('PASS: eight production aircraft hooks, native worklets and four output buses.');
+console.log('PASS: eight aircraft and four marine production hooks, native worklets and four output buses.');
 console.log('PASS: throttle blends, blower controls, valve choices, stall recovery, restart race and eight actual offline renders. This does not assess subjective sound quality.');fs.unlinkSync(out);
 
 

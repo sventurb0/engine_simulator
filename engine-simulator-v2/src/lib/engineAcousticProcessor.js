@@ -2,7 +2,7 @@
 // Inferred dimensions and sound coefficients are acoustic assumptions, not measured specifications.
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const finite=(value,fallback,a,b)=>Number.isFinite(value)?clamp(value,a,b):fallback;
-const layouts={flat2:2,radial5:5,radial7:7,radial9:9,radial14:14,rotary9:9,w12:12,i3:3,i4:4,i5:5,i6:6,v4:4,v6:6,flat4:4,flat6:6,v8:8,v10:10,v12:12};
+const layouts={single:1,i2:2,flat2:2,radial5:5,radial7:7,radial9:9,radial14:14,rotary9:9,w12:12,i3:3,i4:4,i5:5,i6:6,v4:4,v6:6,flat4:4,flat6:6,v8:8,v10:10,v12:12};
 // Signed events: inlet opening before TDC, inlet closing after BDC,
 // exhaust opening before BDC, exhaust closing after TDC. Lift curve is an
 // assumed sin² ramp; manuals do not supply checking lift or full cam lobes.
@@ -21,9 +21,10 @@ export function valveTimingFor(config={}) {
 }
 export function acousticProfileFor(config={}) {
   const cylinders=layouts[config.engineLayout];if(!cylinders)return null;
+  const marine=config.applicationType==='boat',large=marine||config.applicationType==='plane';
   const plane=config.applicationType==='plane',rotary=config.engineLayout==='rotary9',radial=config.engineLayout.startsWith('radial');
-  const perCylinder=Math.PI/4*(finite(config.bore,86,40,plane?250:180)/1000)**2*(finite(config.stroke,86,30,plane?250:180)/1000)*1000;
-  const disp=perCylinder*cylinders,cam=finite(config.camAggression,.4,0,1),valves=finite(config.valvesPerCylinder,4,plane?1:2,5);
+  const perCylinder=Math.PI/4*(finite(config.bore,86,marine?25:40,marine?300:plane?250:180)/1000)**2*(finite(config.stroke,86,marine?25:30,marine?300:plane?250:180)/1000)*1000;
+  const disp=perCylinder*cylinders,cam=finite(config.camAggression,.4,0,1),valves=finite(config.valvesPerCylinder,4,large?0:2,5);
   const turbo=config.induction==='turbo',ohv=config.valvetrainLayout==='ohv',banked=/^(v|flat|w)/.test(config.engineLayout)||config.engineLayout==='radial14';
   const crossplane=config.engineLayout==='v8'&&config.v8Crank!=='flatplane';
   const banks=config.engineLayout==='w12'?Array.from({length:cylinders},(_,i)=>i%3):!banked?Array(cylinders).fill(0):crossplane?[0,1,0,1,1,0,1,0]:Array.from({length:cylinders},(_,i)=>i%2);
@@ -37,15 +38,21 @@ export function acousticProfileFor(config={}) {
   const valveTiming=valveTimingFor(config);
   const overlap=finite(config.camOverlapDeg,Math.max(0,(cam-.2)*70),0,100);
   const airCleaner=config.airCleaner==='auto'||!config.airCleaner?(config.intakeType==='itb'?'trumpets':'airbox'):config.airCleaner;
-  const intakePipe=finite(config.intakePipeM,.65,.1,2),intakeBore=finite(config.intakeBoreMm,65,30,120),plenum=finite(config.intakePlenumL,disp*.8,.3,plane?40:8);
+  const intakePipe=finite(config.intakePipeM,.65,.1,2),intakeBore=finite(config.intakeBoreMm,65,30,120),plenum=finite(config.intakePlenumL,disp*.8,.3,large?40:8);
   const firingPositions=radial||rotary?Array.from({length:cylinders},(_,i)=>config.engineLayout==='radial14'?(i*9)%14:(i*2)%cylinders):null;
   // Aircraft combustion detail extends to rotating cylinders, V banks and the
   // flat four. The flat twin and W source retain their previous character.
   // These are architecture/geometry rules, never preset names or a recorded voice.
-  const aircraftSource=plane&&(radial||rotary||!banked||config.engineLayout.startsWith('v')||config.engineLayout==='flat4');
+  const aircraftSource=marine||plane&&(radial||rotary||!banked||config.engineLayout.startsWith('v')||config.engineLayout==='flat4');
   const aircraftBank=aircraftSource&&config.engineLayout.startsWith('v');
   const scatter=aircraftSource?finite(config.soundTexture,.5,0,1)*clamp(.10+plenum/disp*.055+perCylinder*.022,.12,.24):0;
-  const profile={plane,rotary,radial,firingPositions,bankCount:config.engineLayout==='w12'?3:2,
+  const twoStroke=marine&&config.engineCycle==='two';
+  // Intervals in average event units. Paired opposed cylinders fire together;
+  // Kelvin 2-1-0-0 gives 180/540 crank degrees across a four-stroke cycle.
+  const eventGaps=marine&&cylinders===2?config.marineFiring==='paired'?[2,0]:!twoStroke&&config.marineFiring==='uneven_twin'?[.5,1.5]:null:null;
+  const profile={marine,twoStroke,eventGaps,hotBulb:marine&&config.marineCombustion==='hot_bulb',
+    wet:marine&&config.marineExhaust!=='dry',submerged:marine&&config.marineOutlet==='submerged',enclosure:marine?finite(config.marineEnclosure,.4,0,1):0,
+    plane,rotary,radial,firingPositions,bankCount:config.engineLayout==='w12'?3:2,
     openStubs:plane&&config.planeExhaust!=='collector',sleeve:config.sleeveValves===true,
     propeller:plane&&config.propellerEnabled!==false,propBlades:Math.round(finite(config.propellerBlades,2,2,4)),
     propDiameter:finite(config.propellerDiameterM,2,.8,4.5),propRatio:finite(config.propellerRatio,1,.25,1),propLevel:finite(config.propellerLoudness,.6,0,1.5),
@@ -56,10 +63,10 @@ export function acousticProfileFor(config={}) {
     cylinders,banks,banked,layout:config.engineLayout,crossplane,
     runners:Array.from({length:cylinders},(_,i)=>runner*variations[i%4]),collector,tailpipe,
     cutoff:aircraftSource?cutoff*clamp((.65/perCylinder)**.22,.55,1):cutoff,
-    pulseMs:clamp(valveTiming?(2.6+perCylinder*4.5)/(1+.7*valveTiming.exhaustLift/12)*(240/valveTiming.exhaustDuration):(2.6+perCylinder*4.5)/(1+.7*cam*(valves/4)),1.5,aircraftSource?16:9),turbo,induction:config.induction??'na',
-    displacementL:disp,perCylinderL:perCylinder,compression:finite(config.compressionRatio,10,plane?3.5:6,16),
-    cam,overlap,idleOverlap:config.camOverlapDeg!==undefined?overlap:valveTiming?valveTiming.effectiveOverlap:overlap*(config.liftSystem&&config.liftSystem!=='none'?.18:config.vvtMode==='dual'?.35:config.vvtMode==='intake'?.6:1),redline:finite(config.redline,6600,plane?800:3000,18000),flywheel:finite(config.flywheelInertiaKgM2,.18,.04,1),
-    idle:finite(config.acousticIdleRpm,config.engineLayout==='v8'?(crossplane?650:860):800,plane?350:500,1600),
+    pulseMs:clamp(valveTiming?(2.6+perCylinder*4.5)/(1+.7*valveTiming.exhaustLift/12)*(240/valveTiming.exhaustDuration):(2.6+perCylinder*4.5)/(1+.7*cam*(valves/4)),1.5,marine?50:aircraftSource?16:9),turbo,induction:config.induction??'na',
+    displacementL:disp,perCylinderL:perCylinder,compression:finite(config.compressionRatio,10,large?3.5:6,16),
+    cam,overlap,idleOverlap:config.camOverlapDeg!==undefined?overlap:valveTiming?valveTiming.effectiveOverlap:overlap*(config.liftSystem&&config.liftSystem!=='none'?.18:config.vvtMode==='dual'?.35:config.vvtMode==='intake'?.6:1),redline:finite(config.redline,6600,marine?200:plane?800:3000,18000),flywheel:finite(config.flywheelInertiaKgM2,.18,.04,marine?20:1),
+    idle:finite(config.acousticIdleRpm,config.engineLayout==='v8'?(crossplane?650:860):800,marine?100:plane?350:500,1600),
     intake:config.intakeType??'plenum',intakeRunner:{long:.48,medium:.34,short:.20}[config.runnerLength]??.34,
     injection:config.injectionType??'port',carbSecondary:config.carbSecondary??'progressive',airCleaner,
     camDrive:config.camDrive??'chain',crossover:banked?(config.exhaustCrossover??'none'):'none',
@@ -83,7 +90,7 @@ export class EngineAcousticModel {
     this.cylinderMixture=new Float64Array(profile.cylinders);
     this.afterDelay=new Float64Array(profile.cylinders);this.afterEnergy=new Float64Array(profile.cylinders);
     this.valveEnvelope=new Float64Array(profile.cylinders);this.valveDelay=new Float64Array(profile.cylinders);
-    this.valveRing1=0;this.valveRing2=0;this.gearNoise=0;this.shaftDrift=0;
+    this.valveRing1=0;this.valveRing2=0;this.gearNoise=0;this.shaftDrift=0;this.waterPressure=0;this.marineLow=[0,0];this.waterLow=0;this.hotKnock=0;
     this.lastControlThrottle=0;this.releaseFuel=0;this.afterfireCount=0;
     this.bankBody=Array(profile.bankCount).fill(0);
     this.cylinderTrim=Array.from({length:profile.cylinders},(_,c)=>1+profile.scatter*.6*Math.sin((c+1)*2.3999632297));
@@ -151,7 +158,7 @@ export class EngineAcousticModel {
       this.blipGain+=((p.rotary&&t.rotaryBlip?0:1)-this.blipGain)*fade;
       this.rotorPhase=(this.rotorPhase+this.rpm/60/sr)%1;
       this.active+=((t.active?1:0)-this.active)*fade;
-      if(p.injection==='carb')this.cut=false;
+      if(p.injection==='carb'||p.hotBulb)this.cut=false;
       else if(this.throttle<.035&&this.rpm>1900)this.cut=true;
       else if(this.throttle>.065||this.rpm<1400)this.cut=false;
       this.fuel+=((this.cut?0:1)-this.fuel)*fade;
@@ -169,10 +176,10 @@ export class EngineAcousticModel {
       const hunt=Math.sin(this.huntPhase*2*Math.PI);
       this.rippleRpm=this.rpm*lope*.07*inertiaScale*hunt;
       const eventRpm=Math.max(0,this.rpm+this.rippleRpm+(p.aircraftSource?this.shaftDrift:0));
-      const step=eventRpm/120*p.cylinders/sr;
+      const step=eventRpm/(p.twoStroke?60:120)*p.cylinders/sr;
       this.phase+=step;
-      if(this.phase>=1){
-        this.phase-=1;const cylinder=this.slot;
+      for(let burst=0;burst<p.cylinders&&this.phase>=(p.eventGaps?.[this.slot]??1);burst++){
+        this.phase-=p.eventGaps?.[this.slot]??1;const cylinder=this.slot;
         let variation=1+this.noise()*(.015+p.texture*.02+lope*.48)+lope*.30*hunt;
         if(p.aircraftSource){
           this.cylinderMixture[cylinder]=this.cylinderMixture[cylinder]*.65+this.noise()*.35;
@@ -183,11 +190,12 @@ export class EngineAcousticModel {
           if(this.noise()+1<aircraftIdle*p.scatter*.12)variation*=.45;
         }
         const volume=clamp(Math.sqrt(p.perCylinderL/.55),.65,1.5)*clamp((p.compression/10)**.25,.85,1.18);
-        const limiter=!p.plane&&this.rpm>=p.redline-50 && Math.floor(this.events/p.cylinders)%2===0?0:1;
+        const limiter=!p.plane&&!p.marine&&this.rpm>=p.redline-50 && Math.floor(this.events/p.cylinders)%2===0?0:1;
         const amplitude=(.20+this.load*.80)*this.fuel*variation*volume*limiter*this.blipGain;
         this.lastPulseAmplitude=amplitude;
+        if(p.marine){this.waterPressure+=amplitude/Math.sqrt(p.cylinders)*.15;if(p.hotBulb)this.hotKnock+=amplitude*.7;}
         if(!p.turbo)this.pulseDecay[cylinder]=Math.exp(-1/(sr*p.pulseMs*.001*(1+this.noise()*(p.aircraftSource?.22:.06)*p.texture)));
-        if(p.aircraftSource){
+        if(p.aircraftSource&&!p.twoStroke){
           this.valveDelay[cylinder]=sr*60/Math.max(350,this.rpm)*.65;
           if(p.injection==='carb'&&!(p.rotary&&t.rotaryBlip)&&this.releaseFuel>.04&&this.afterDelay[cylinder]<=0&&this.noise()+1<this.releaseFuel*.28*p.texture){
             this.afterDelay[cylinder]=sr*(.012+(this.noise()+1)*.018);
@@ -310,6 +318,21 @@ export class EngineAcousticModel {
         drive=drive*.22+this.gearNoise*(p.camDrive==='gear'?.003:0);
       }
       mechanical[i]=(valveNoise+injectorTick+drive+aircraftMechanical)*this.active;
+      if(p.marine){
+        // Port-controlled two-strokes have no poppet-valve or cam-drive layer.
+        this.hotKnock*=Math.exp(-1/(sr*.009));
+        mechanical[i]=(p.twoStroke?air*this.hotKnock*.035+this.mechLow*.004:mechanical[i])*(1-p.enclosure*.78)*this.active;
+        intake[i]*=1-p.enclosure*.65;
+        this.waterPressure*=Math.exp(-1/(sr*.075));
+        this.waterLow+=(air-this.waterLow)*(1-Math.exp(-2*Math.PI*420/sr));
+        const bubble=(p.wet||p.submerged)?this.waterLow*Math.min(1,this.waterPressure)*(.035+.06*this.load)*this.active:0;
+        const cutoff=p.submerged?400:p.wet?1000:7000;
+        const waterLp=1-Math.exp(-2*Math.PI*cutoff/sr);
+        const absorption=p.submerged?.5:p.wet?.82:1;
+        this.marineLow[0]+=(exhaust[i]-this.marineLow[0])*waterLp;
+        exhaust[i]=(this.marineLow[0]*absorption+bubble);
+        if(right){this.marineLow[1]+=(right[i]-this.marineLow[1])*waterLp;right[i]=this.marineLow[1]*absorption+bubble;}
+      }
       let propSound=0;
       this.propRpm=this.rpm*p.propRatio;this.bladeHz=this.propRpm/60*p.propBlades;
       if(p.propeller){

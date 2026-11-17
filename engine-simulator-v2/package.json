@@ -14,7 +14,8 @@
     "test:audio": "node scripts/check-audio.mjs",
     "test:acoustics": "node scripts/check-acoustics.mjs",
     "test:planes": "node scripts/check-planes.mjs",
-    "test:plane-audio": "node scripts/check-plane-audio.mjs"
+    "test:plane-audio": "node scripts/check-plane-audio.mjs",
+    "test:boats": "node scripts/check-boats.mjs"
   },
   "dependencies": {
     "@radix-ui/react-select": "^2.2.6",

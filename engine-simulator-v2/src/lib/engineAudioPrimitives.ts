@@ -6,6 +6,8 @@ export const smoothStep = (x: number, e0: number, e1: number) => {
 };
 
 export const engineLayouts: Record<string, { label: string; cylinders: number; firingFactor: number; pulseSpread: number; pulseDepth: number }> = {
+  single: {label:"Single cylinder",cylinders:1,firingFactor:.5,pulseSpread:.1,pulseDepth:1.2},
+  i2: {label:"Inline twin",cylinders:2,firingFactor:1,pulseSpread:.1,pulseDepth:1.1},
   flat2: {label:"Flat twin",cylinders:2,firingFactor:1,pulseSpread:.03,pulseDepth:1},
   radial5: {label:"Radial 5",cylinders:5,firingFactor:2.5,pulseSpread:.08,pulseDepth:1.1},
   radial7: {label:"Radial 7",cylinders:7,firingFactor:3.5,pulseSpread:.06,pulseDepth:1.1},

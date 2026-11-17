@@ -2,6 +2,7 @@ import { engineCalibrations, calibrationById, calibrationForPreset, calibrationF
 import { compressorMaps, mapEfficiency, correctedFlow, type CompressorMapKey } from "./data/compressorMaps";
 import { WATTS_PER_HP, NM_PER_LBFT, PA_PER_PSI, KG_S_TO_LB_MIN, powerHpFromTorque, torqueFromPowerHp, bmepPsiFromTorque, fuelProperties, mixtureEfficiency, ignitionEfficiency, injectorCcFromFuel, angularAccelerationRpmS, throttleAfterStep } from "./lib/powertrainMath";
 import { expandFactoryPresets, manufacturerReferences } from "./data/factoryEngines";
+import { boatPresets } from "./data/boatEngines";
 import { planePresets, planeAudioReferences } from "./data/planeEngines";
 import { documentedAcoustics } from "./data/documentedAcoustics";
 import { acousticProfileFor } from "./lib/engineAcousticProcessor.js";
@@ -17,7 +18,7 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tool
 import { Play, Pause, Gauge, Activity, Volume2, RotateCcw } from "lucide-react";
 
 type InductionType = "na" | "turbo" | "supercharger";
-type EngineLayout = "flat2" | "radial5" | "radial7" | "radial9" | "radial14" | "rotary9" | "w12" | "i3" | "i4" | "i5" | "i6" | "v4" | "v6" | "flat4" | "flat6" | "v8" | "v10" | "v12";
+type EngineLayout = "single" | "i2" | "flat2" | "radial5" | "radial7" | "radial9" | "radial14" | "rotary9" | "w12" | "i3" | "i4" | "i5" | "i6" | "v4" | "v6" | "flat4" | "flat6" | "v8" | "v10" | "v12";
 type TurboFamily = "small" | "medium" | "large";
 type BlowerType = "roots" | "twinscrew" | "centrifugal";
 type ChargeReleaseMode = "none" | "recirc" | "dump";
@@ -40,11 +41,20 @@ type MicPosition = "dyno_room" | "cockpit" | "engine_bay" | "intake_side" | "rea
 type GraphMode = "live" | "dyno";
 type GraphPage = "power" | "diagnostics";
 type DiagnosticMetricKey = "vePct" | "mapKpa" | "chargeTempC" | "airLbMin" | "injectorCc" | "compressorEffPct" | "densityRatio" | "bmepPsi" | "targetAfr" | "pr" | "eventHz";
-type ControlTab = "planes" | "library" | "live" | "engine" | "induction" | "environment" | "audio";
+type ControlTab = "boats" | "planes" | "library" | "live" | "engine" | "induction" | "environment" | "audio";
 type FiringSoundMode = "stock" | "even" | "crossplane_i4" | "bigbang_i4" | "cp3_triple" | "bigbang_v4" | "oddfire_v6" | "lopey_v8";
-type ApplicationType = "car" | "plane";
+type ApplicationType = "car" | "plane" | "boat";
 
 export type SimConfig = {
+  engineCycle?: "four" | "two";
+  marineCombustion?: "spark" | "hot_bulb";
+  marineExhaust?: "dry" | "wet";
+  marineOutlet?: "above" | "submerged";
+  marineEnclosure?: number;
+  marinePropLoad?: number;
+  marineRatedRpm?: number;
+  marinePowerScale?: number;
+  marineFiring?: "even" | "paired" | "uneven_twin";
   planeRatedRpm?: number;
   planePowerScale?: number;
   propellerEnabled?: boolean;
@@ -178,7 +188,7 @@ type SolvePoint = {
 };
 
 type SweepRow = SolvePoint & { time?: number };
-export type EnginePreset = { name: string; manufacturer?: string; nominalLitres?: number; setupKind?: "existing" | "illustrative"; config: Partial<SimConfig>; referenceName?: string; category?: string; era?: string; source?: string; referenceHp?: number; referenceRpm?: number; ratingAltitudeM?: number; evidence?: string; group?: "plane" | "factory" | "custom" | "saved" };
+export type EnginePreset = { name: string; manufacturer?: string; nominalLitres?: number; setupKind?: "existing" | "illustrative"; config: Partial<SimConfig>; referenceName?: string; category?: string; era?: string; source?: string; referenceHp?: number; referenceRpm?: number; ratingAltitudeM?: number; evidence?: string; group?: "boat" | "plane" | "factory" | "custom" | "saved" };
 
 const PA_TO_PSI = 1 / PA_PER_PSI;
 const KELVIN = 273.15;
@@ -188,6 +198,7 @@ const GAMMA_AIR = 1.4;
 const fmt = (n: number, d = 0) => (Number.isFinite(n) ? n.toFixed(d) : "—");
 
 function resolveIdleRpm(config: SimConfig) {
+  if(config.applicationType==='boat')return clamp(config.idleRpm,100,Math.min(1000,config.redline*.7));
   if(config.applicationType==='plane')return clamp(config.idleRpm,350,Math.min(1000,config.redline*.65));
   let base = 800;
   switch (config.engineLayout) {
@@ -514,7 +525,7 @@ const legacyPresets: EnginePreset[] = [
   },
 ];
 
-const presets = [...expandFactoryPresets(legacyPresets),...planePresets];
+const presets = [...expandFactoryPresets(legacyPresets),...planePresets,...boatPresets];
 
 const defaultConfig: SimConfig = {
   audioModel: "acoustic", airCleaner:"auto",carbSecondary:"progressive",camDrive:"chain",exhaustCrossover:"none",catalyst:"stock",flywheelInertiaKgM2:.18,
@@ -580,7 +591,16 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
   return {
     ...defaultConfig,
     ...config,
-    applicationType: config.applicationType==='plane'?'plane':'car',
+    applicationType: coerceOption(config.applicationType,["car","plane","boat"] as const,"car"),
+    engineCycle: config.applicationType==='boat'&&config.engineCycle==='two'?'two':'four',
+    marineCombustion: config.marineCombustion==='hot_bulb'?'hot_bulb':'spark',
+    marineExhaust: config.marineExhaust==='dry'?'dry':'wet',
+    marineOutlet: config.marineOutlet==='submerged'?'submerged':'above',
+    marineFiring: coerceOption(config.marineFiring,["even","paired","uneven_twin"] as const,"even"),
+    marineEnclosure: Number.isFinite(config.marineEnclosure)?clamp(config.marineEnclosure!,0,1):.4,
+    marinePropLoad: Number.isFinite(config.marinePropLoad)?clamp(config.marinePropLoad!,0,1.5):1,
+    marineRatedRpm: Number.isFinite(config.marineRatedRpm)?clamp(config.marineRatedRpm!,200,4500):undefined,
+    marinePowerScale: Number.isFinite(config.marinePowerScale)?clamp(config.marinePowerScale!,.01,8):undefined,
     planeRatedRpm: Number.isFinite(config.planeRatedRpm)?clamp(config.planeRatedRpm!,800,4000):undefined,
     planePowerScale: Number.isFinite(config.planePowerScale)?clamp(config.planePowerScale!,.05,6):undefined,
     propellerEnabled: config.applicationType==='plane'&&config.propellerEnabled!==false,
@@ -599,14 +619,14 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     catalyst: coerceOption(config.catalyst,["stock","high_flow","none"] as const,"stock"),
     intakePipeM: Number.isFinite(config.intakePipeM)?clamp(config.intakePipeM!,.1,2):undefined,
     intakeBoreMm: Number.isFinite(config.intakeBoreMm)?clamp(config.intakeBoreMm!,30,120):undefined,
-    intakePlenumL: Number.isFinite(config.intakePlenumL)?clamp(config.intakePlenumL!,.3,config.applicationType==='plane'?40:8):undefined,
+    intakePlenumL: Number.isFinite(config.intakePlenumL)?clamp(config.intakePlenumL!,.3,config.applicationType!=='car'?40:8):undefined,
     silencerCount: Number.isFinite(config.silencerCount)?Math.round(clamp(config.silencerCount!,0,2)):undefined,
     silencerVolumeL: Number.isFinite(config.silencerVolumeL)?clamp(config.silencerVolumeL!,1,25):undefined,
     intakeCamAdvanceDeg: Number.isFinite(config.intakeCamAdvanceDeg)?clamp(config.intakeCamAdvanceDeg!,0,40):undefined,
     acousticVtcMode: coerceOption(config.acousticVtcMode,["off","on","auto"] as const,"off"),
     valveEvents: config.valveEvents && Object.values(config.valveEvents).length===6 && Object.values(config.valveEvents).every(Number.isFinite)?config.valveEvents:undefined,
     camOverlapDeg: Number.isFinite(config.camOverlapDeg)?clamp(config.camOverlapDeg!,0,100):undefined,
-    flywheelInertiaKgM2: Number.isFinite(config.flywheelInertiaKgM2)?clamp(config.flywheelInertiaKgM2!,.04,1):.18,
+    flywheelInertiaKgM2: Number.isFinite(config.flywheelInertiaKgM2)?clamp(config.flywheelInertiaKgM2!,.04,config.applicationType==='boat'?20:1):.18,
     exhaustRunnerM: Number.isFinite(config.exhaustRunnerM)?clamp(config.exhaustRunnerM!,.15,1.5):undefined,
     collectorLengthM: Number.isFinite(config.collectorLengthM)?clamp(config.collectorLengthM!,.3,3):undefined,
     tailpipeLengthM: Number.isFinite(config.tailpipeLengthM)?clamp(config.tailpipeLengthM!,.5,5):undefined,
@@ -644,13 +664,13 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
 }
 
 function configForPreset(preset:EnginePreset):SimConfig {
-  if(preset.group==='plane'){
-    const c=sanitizeConfig({...defaultConfig,...preset.config,applicationType:'plane',audioModel:'acoustic',calibrationId:undefined,calibrationEnabled:false,gameMeta:{name:preset.name}});
+  if(preset.group==='plane'||preset.group==='boat'){
+    const c=sanitizeConfig({...defaultConfig,...preset.config,applicationType:preset.group,audioModel:'acoustic',calibrationId:undefined,calibrationEnabled:false,gameMeta:{name:preset.name}});
     // Fixed upstream charge coefficient at the representative rating. Tuneable
     // components still affect power; no runtime torque clamp or name dispatch.
-    let lo=.05,hi=6;
+    let lo=preset.group==='boat'?.01:.05,hi=preset.group==='boat'?8:6;
     for(let i=0;i<45;i++){const mid=(lo+hi)/2;if(solveDynoPoint(c,preset.referenceRpm!,mid).brakeHp<preset.referenceHp!)lo=mid;else hi=mid;}
-    return {...c,planePowerScale:(lo+hi)/2};
+    return preset.group==='boat'?{...c,marinePowerScale:(lo+hi)/2}:{...c,planePowerScale:(lo+hi)/2};
   }
   const profile=preset.group==='factory'?calibrationForPreset(preset.name):undefined;
   return sanitizeConfig({...defaultConfig,...preset.config,...profile?.overrides,
@@ -699,7 +719,7 @@ const diagnosticMetricMeta: Record<DiagnosticMetricKey, { label: string; color: 
 };
 
 const storageKey = "engine-sim-user-presets";
-const engineLayoutValues = ["flat2","radial5","radial7","radial9","radial14","rotary9","w12","i3", "i4", "i5", "i6", "v4", "v6", "flat4", "flat6", "v8", "v10", "v12"] as const;
+const engineLayoutValues = ["single","i2","flat2","radial5","radial7","radial9","radial14","rotary9","w12","i3", "i4", "i5", "i6", "v4", "v6", "flat4", "flat6", "v8", "v10", "v12"] as const;
 const inductionValues = ["na", "turbo", "supercharger"] as const;
 const valvetrainValues = ["ohv", "sohc", "dohc"] as const;
 const v8CrankValues = ["crossplane", "flatplane"] as const;
@@ -752,6 +772,7 @@ function squareBias(boreMm: number, strokeMm: number) {
 }
 
 function valvetrainCeiling(config: SimConfig) {
+  if(config.applicationType==='boat')return config.marineRatedRpm??config.redline;
   if(config.applicationType==='plane')return config.planeRatedRpm??config.redline;
   const shape = squareBias(config.bore, config.stroke);
   const hw = getHardwareState(config, config.liftSwitchRpm + 250);
@@ -768,8 +789,8 @@ function valvetrainCeiling(config: SimConfig) {
 function estimateVE(config: SimConfig, rpm: number, mapKpa: number, dispL: number) {
   const shape = squareBias(config.bore, config.stroke);
   const hw = getHardwareState(config, rpm);
-  if(config.applicationType==='plane'){
-    const rated=config.planeRatedRpm??config.redline;
+  if(config.applicationType!=='car'){
+    const rated=(config.applicationType==='boat'?config.marineRatedRpm:config.planeRatedRpm)??config.redline;
     return clamp((.68+.12*Math.exp(-Math.pow((rpm-rated*.78)/(rated*.55),2)))*(1+config.camAggression*.1+hw.vePeakAdj),.35,1.15);
   }
   const isLargeNa = config.induction === "na" && dispL >= 3.8;
@@ -1001,7 +1022,7 @@ function solvePoint(config: SimConfig, runtime: RuntimeState, chargeScaleOverrid
   const throttle = clamp(runtime.throttle, 0, 1);
   const rpm = clamp(runtime.rpm, resolveIdleRpm(config), config.redline);
   const hw = getHardwareState(config, rpm);
-  const chargeScale = chargeScaleOverride ?? (config.applicationType==='plane'?(config.planePowerScale??1):chargeCorrection(config,rpm));
+  const chargeScale = chargeScaleOverride ?? (config.applicationType==='boat'?(config.marinePowerScale??1):config.applicationType==='plane'?(config.planePowerScale??1):chargeCorrection(config,rpm));
 
   let boostPsi = 0;
   let pr = 1;
@@ -1076,7 +1097,7 @@ function solvePoint(config: SimConfig, runtime: RuntimeState, chargeScaleOverrid
     }
   }
 
-  const cyclesPerSec = rpm / 120; // four-stroke: one intake cycle per two revolutions
+  const cyclesPerSec = rpm / (config.applicationType==='boat'&&config.engineCycle==='two'?60:120); // four-stroke: one intake cycle per two revolutions
   const intakeVolumeM3S = dispM3 * cyclesPerSec * ve;
   const airMassKgS = intakeVolumeM3S * (mapKpa * 1000) / (R_AIR * chargeTempK) * atm.dryAirFraction;
   const airLbMin = airMassKgS * KG_S_TO_LB_MIN;
@@ -1098,20 +1119,20 @@ function solvePoint(config: SimConfig, runtime: RuntimeState, chargeScaleOverrid
   const indicatedWatts = combustibleFuelKgS * fuel.lowerHeatingValue * indicatedEfficiency * (config.engineLayout==='rotary9'&&config.rotaryBlip?0:1);
   const indicatedHp = indicatedWatts / WATTS_PER_HP;
   const frictionTorqueLbFt = estimateFrictionTorque(config, rpm, dispL, engine.cylinders);
-  const pumpingTorqueLbFt = Math.max(0, atm.pressurePa - mapKpa * 1000) * dispM3 / (4 * Math.PI * NM_PER_LBFT);
+  const pumpingTorqueLbFt = Math.max(0, atm.pressurePa - mapKpa * 1000) * dispM3 / ((config.applicationType==='boat'&&config.engineCycle==='two'?2:4) * Math.PI * NM_PER_LBFT);
   // Compressor drive power comes from air mass and enthalpy rise, not boost alone.
   if (config.induction === 'supercharger') {
     driveLossHp = airMassKgS * 1005 * Math.max(0, preIcTempK - atm.tempK) / (0.9 * WATTS_PER_HP);
   }
   const finalTorqueLbFt = torqueFromPowerHp(indicatedHp - driveLossHp, rpm) - frictionTorqueLbFt - pumpingTorqueLbFt;
   const brakeHp = powerHpFromTorque(finalTorqueLbFt, rpm);
-  const bmepPsi = bmepPsiFromTorque(finalTorqueLbFt, dispL);
+  const bmepPsi = bmepPsiFromTorque(finalTorqueLbFt, dispL)/(config.applicationType==='boat'&&config.engineCycle==='two'?2:1);
   const injectorCc = injectorCcFromFuel(fuelMassKgS, fuel.densityKgL, engine.cylinders);
   const fuelFlowKgHr = fuelMassKgS * 3600;
   const brakeThermalEfficiency = Math.max(0, brakeHp * WATTS_PER_HP) / Math.max(1, fuelMassKgS * fuel.lowerHeatingValue);
   const densityRatio = (mapKpa * 1000 / chargeTempK) / (atm.pressurePa / atm.tempK);
   const cfm = airMassKgS / 1.225 * 60 / 0.028316846592; // standard dry-air volume
-  const eventHz = (rpm / 60) * engine.firingFactor;
+  const eventHz = (rpm / 60) * engine.firingFactor * (config.applicationType==='boat'&&config.engineCycle==='two'?2:1);
   boostPsi = Math.max(0, (mapKpa * 1000 - atm.pressurePa) / PA_PER_PSI);
 
   return {
@@ -1149,8 +1170,8 @@ function solveDynoPoint(config: SimConfig, rpm: number, chargeScaleOverride?: nu
 
 function buildDynoSweep(config: SimConfig) {
   const rows: SweepRow[] = [];
-  const start = config.applicationType==='plane'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config));
-  for (let rpm = start; rpm < config.redline; rpm += config.applicationType==='plane'?25:100) rows.push(solveDynoPoint(config,rpm));
+  const start = config.applicationType!=='car'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config));
+  for (let rpm = start; rpm < config.redline; rpm += config.applicationType!=='car'?25:100) rows.push(solveDynoPoint(config,rpm));
   rows.push(solveDynoPoint(config,config.redline));
   if(config.applicationType==='plane'&&config.planeRatedRpm&&!rows.some(row=>row.rpm===config.planeRatedRpm))rows.push(solveDynoPoint(config,config.planeRatedRpm));
   const profile=config.calibrationEnabled===false?undefined:calibrationById(config.calibrationId);
@@ -1161,7 +1182,11 @@ function buildDynoSweep(config: SimConfig) {
 function stepRuntime(config: SimConfig, runtime: RuntimeState, targetThrottle: number, dt: number): RuntimeState {
   const throttle = throttleAfterStep(runtime.throttle,targetThrottle,dt);
   const point = solvePoint(config,{...runtime,throttle});
-  const brakeTorque = config.dynoBrakeLoad + runtime.rpm * 0.00145;
+  // Matched fixed-pitch propeller: torque rises with shaft speed squared.
+  // Rated torque and load coefficient describe an illustrative installation.
+  const rated=config.marineRatedRpm??config.redline;
+  const propTorque=config.applicationType==='boat'?Math.max(0,solveDynoPoint(config,rated).torqueLbFt)*(config.marinePropLoad??1)*Math.pow(runtime.rpm/rated,2):0;
+  const brakeTorque = config.applicationType==='boat'?propTorque:config.dynoBrakeLoad + runtime.rpm * 0.00145;
   const inertiaKgM2 = (config.flywheelInertiaKgM2??.18) + point.dispL * 0.07 + config.dynoRollerInertia * 0.018;
   const netTorque = point.torqueLbFt-brakeTorque;
   const rpm = runtime.rpm + angularAccelerationRpmS(netTorque,inertiaKgM2)*dt;
@@ -1305,24 +1330,26 @@ function runRuntimeSelfChecks() {
 }
 
 export default function EngineSimulatorV2() {
+  const startInBoats=typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('section')==='boats';
   const startInPlanes=typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('section')==='planes';
-  const [config, setConfig] = useState<SimConfig>(()=>startInPlanes?configForPreset(planePresets[0]):defaultConfig);
-  const [runtime, setRuntime] = useState<RuntimeState>(()=>startInPlanes?{...defaultRuntime,rpm:planePresets[0].config.idleRpm!}:defaultRuntime);
+  const [config, setConfig] = useState<SimConfig>(()=>startInBoats?configForPreset(boatPresets[0]):startInPlanes?configForPreset(planePresets[0]):defaultConfig);
+  const [runtime, setRuntime] = useState<RuntimeState>(()=>startInBoats?{...defaultRuntime,rpm:boatPresets[0].config.idleRpm!}:startInPlanes?{...defaultRuntime,rpm:planePresets[0].config.idleRpm!}:defaultRuntime);
   const [graphMode, setGraphMode] = useState<GraphMode>("dyno");
   const [graphPage, setGraphPage] = useState<GraphPage>("power");
   const [diagLeftMetric, setDiagLeftMetric] = useState<DiagnosticMetricKey>("vePct");
   const [diagRightMetric, setDiagRightMetric] = useState<DiagnosticMetricKey>("mapKpa");
   const [running, setRunning] = useState(true);
   const [audioEnabled, setAudioEnabled] = useState(false);
-  const [tab, setTab] = useState<ControlTab>(startInPlanes?"planes":"library");
+  const [tab, setTab] = useState<ControlTab>(startInBoats?"boats":startInPlanes?"planes":"library");
   const [liveTrace, setLiveTrace] = useState<SweepRow[]>([]);
   const [liveThrottleTarget, setLiveThrottleTarget] = useState(defaultRuntime.throttle);
   const [sweepRunning, setSweepRunning] = useState(false);
-  const [sweepCursor, setSweepCursor] = useState(1200);
+  const [sweepCursor, setSweepCursor] = useState(startInBoats?boatPresets[0].config.idleRpm!:1200);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "downloaded" | "blocked">("idle");
   const [presetSearch, setPresetSearch] = useState("");
   const [manufacturer, setManufacturer] = useState("Saab");
   const [planeSearch,setPlaneSearch]=useState("");
+  const [boatSearch,setBoatSearch]=useState("");
   const [savePresetName, setSavePresetName] = useState("");
   const [savedPresets, setSavedPresets] = useState<EnginePreset[]>([]);
   const lastLiveTraceSampleRef = useRef(0);
@@ -1356,7 +1383,7 @@ export default function EngineSimulatorV2() {
   const ratedHp=ratedPower?powerHpFromTorque(ratedPower.torqueNm/1.3558179483314004,ratedPower.rpm):0;
   const selectedPreset = presets.find(p=>p.name===config.gameMeta?.name);
   const customPresets = useMemo(() => filteredPresets.filter((p) => p.group === "custom"), [filteredPresets]);
-  const userPresets = useMemo(() => filteredPresets.filter((p) => p.group === "saved" && p.config.applicationType!=='plane'), [filteredPresets]);
+  const userPresets = useMemo(() => filteredPresets.filter((p) => p.group === "saved" && p.config.applicationType!=='plane'&&p.config.applicationType!=='boat'), [filteredPresets]);
 
   const acousticHardware = useMemo(()=>acousticProfileFor({...config,acousticIdleRpm:resolveIdleRpm(config)}),[config]);
   const { ensureAudio, acousticStatus } = useEngineAudio({...config,acousticIdleRpm:resolveIdleRpm(config)}, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
@@ -1434,7 +1461,7 @@ export default function EngineSimulatorV2() {
       const now=performance.now();
       const dt=Math.min(0.1,Math.max(0,(now-last)/1000));last=now;
       setSweepCursor(prev=>{
-        const next=Math.min(config.redline,prev+(config.applicationType==='plane'?config.redline*.12:420)*dt);
+        const next=Math.min(config.redline,prev+(config.applicationType!=='car'?config.redline*.12:420)*dt);
         if(next>=config.redline) setSweepRunning(false);
         return next;
       });
@@ -1478,7 +1505,7 @@ export default function EngineSimulatorV2() {
     setGraphMode("dyno");
     setSweepRunning(false);
     setGraphPage("power");
-    setSweepCursor(Math.max(1200, resolveIdleRpm(nextConfig)));
+    setSweepCursor(nextConfig.applicationType==='car'?Math.max(1200, resolveIdleRpm(nextConfig)):resolveIdleRpm(nextConfig));
     setLiveTrace([]);
   };
 
@@ -1570,7 +1597,7 @@ export default function EngineSimulatorV2() {
   const runSweep = async () => {
     setGraphMode("dyno");
     setGraphPage("power");
-    setSweepCursor((config.applicationType==='plane'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config))));
+    setSweepCursor((config.applicationType!=='car'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config))));
     setSweepRunning(true);
     if (audioEnabled) await ensureAudio();
   };
@@ -1585,7 +1612,7 @@ export default function EngineSimulatorV2() {
             <CardHeader className="shrink-0 border-b border-slate-700/60 !pb-4">
               <div className="text-[10px] uppercase tracking-[0.25em] text-sky-400">Apex · Engine laboratory</div>
               <CardTitle className={UI.title}>{config.gameMeta?.name ?? 'Custom engine'}</CardTitle>
-              <div className="text-xs text-slate-400">{sweepRunning ? (config.applicationType==='plane'?'Aircraft bench sweep · estimated performance':'Full-load reference sweep · optimal mixture / estimated MBT') : 'Choose an engine, tune it, then run a sweep.'}</div>
+              <div className="text-xs text-slate-400">{sweepRunning ? (config.applicationType==='boat'?'Marine bench sweep · estimated performance':config.applicationType==='plane'?'Aircraft bench sweep · estimated performance':'Full-load reference sweep · optimal mixture / estimated MBT') : 'Choose an engine, tune it, then run a sweep.'}</div>
               <div className="grid grid-cols-[1fr_auto] gap-2 pt-2">
                 <Button className={`${UI.buttonPrimary} !h-12`} onClick={() => sweepRunning ? setSweepRunning(false) : void runSweep()}>
                   <Gauge className="h-4 w-4" /> {sweepRunning ? 'Stop dyno' : 'Run dyno'}
@@ -1596,6 +1623,7 @@ export default function EngineSimulatorV2() {
               </div>
               <div className="grid grid-cols-3 gap-1 pt-3" role="navigation" aria-label="Simulator sections">
                 <ControlTabButton active={tab === 'library'} onClick={() => setTab('library')}>Cars</ControlTabButton>
+                <ControlTabButton active={tab === 'boats'} onClick={() => setTab('boats')}>Boats</ControlTabButton>
                 <ControlTabButton active={tab === 'planes'} onClick={() => setTab('planes')}>Planes</ControlTabButton>
                 <ControlTabButton active={tab === 'engine'} onClick={() => setTab('engine')}>Engine</ControlTabButton>
                 <ControlTabButton active={tab === 'induction'} onClick={() => setTab('induction')}>Boost</ControlTabButton>
@@ -1605,6 +1633,23 @@ export default function EngineSimulatorV2() {
               </div>
             </CardHeader>
             <CardContent className="min-h-0 grid gap-4 overflow-y-auto !pt-4 lg:max-h-[calc(100vh-20rem)]">
+              {tab==='boats' && <div className="grid gap-4">
+                <div><h3 className="font-semibold text-sky-300">Boats · engines through 1929</h3><p className="mt-2 text-xs text-slate-400">20 game engines based on produced marine engines and period aircraft conversions. Select an engine, enable Audio, then use Drive to hear it under propeller load.</p></div>
+                <input aria-label="Find a boat engine" placeholder="Search game name, historical engine or type…" className={UI.select} value={boatSearch} onChange={e=>setBoatSearch(e.target.value)}/>
+                {['Working singles & twins','Paraffin workboats','Launch fours & sixes','Outboards','Aircraft-powered racers'].map(category=>{const entries=boatPresets.filter(p=>p.category===category&&`${p.name} ${p.referenceName} ${p.category}`.toLowerCase().includes(boatSearch.toLowerCase()));return entries.length?<details open key={category} className="rounded-xl border border-slate-700 p-3"><summary className="cursor-pointer font-medium">{category} · {entries.length}</summary><div className="mt-2 grid gap-2">{entries.map(p=><button key={p.name} aria-pressed={config.gameMeta?.name===p.name} onClick={()=>applyPreset(p)} className={`rounded-lg border p-3 text-left ${config.gameMeta?.name===p.name?'border-sky-400 bg-sky-950':'border-slate-700 bg-slate-900'}`}><span className="block text-sm font-semibold">{p.name}</span><span className="block text-xs text-slate-400">{p.referenceName} · {p.era}<br/>{engineLayouts[p.config.engineLayout!].label} · {p.config.engineCycle==='two'?'Two-stroke':'Four-stroke'} · {p.referenceHp} hp reference</span></button>)}</div></details>:null;})}
+                {selectedPreset?.group==='boat'&&<div className="rounded-xl border border-sky-800 p-3 text-xs text-slate-300"><strong>{selectedPreset.referenceName}</strong><p className="my-2">{selectedPreset.evidence}</p><p>Setup anchor: {selectedPreset.referenceHp} hp at {selectedPreset.referenceRpm} RPM. Estimated dimensions/RPM are identified above. Curves between ratings are inferred.</p><a className="block mt-2 text-sky-300 underline" href={selectedPreset.source} target="_blank" rel="noreferrer">Historical reference</a></div>}
+                {savedPresets.some(p=>p.config.applicationType==='boat')&&<details open><summary>Saved boat setups</summary>{savedPresets.filter(p=>p.config.applicationType==='boat').map(p=><Button key={p.name} className={UI.buttonOutline} onClick={()=>applyPreset(p)}>{p.name}</Button>)}</details>}
+                {config.applicationType==='boat'&&<div className="grid gap-3 rounded-xl border border-slate-700 p-3"><h3 className="text-sm font-semibold">Marine installation</h3>
+                  <label className="text-sm">Operating cycle<select aria-label="Marine operating cycle" className={UI.select} value={config.engineCycle??'four'} onChange={e=>updateConfig('engineCycle',e.target.value as SimConfig['engineCycle'])}><option value="four">Four-stroke</option><option value="two">Two-stroke</option></select></label>
+                  <label className="text-sm">Exhaust cooling<select aria-label="Marine exhaust cooling" className={UI.select} value={config.marineExhaust??'wet'} onChange={e=>updateConfig('marineExhaust',e.target.value as SimConfig['marineExhaust'])}><option value="wet">Wet exhaust · water-cooled discharge</option><option value="dry">Dry exhaust</option></select></label>
+                  <label className="text-sm">Exhaust outlet<select aria-label="Marine exhaust outlet" className={UI.select} value={config.marineOutlet??'above'} onChange={e=>updateConfig('marineOutlet',e.target.value as SimConfig['marineOutlet'])}><option value="above">Above water</option><option value="submerged">Submerged outlet</option></select></label>
+                  {engineLayouts[config.engineLayout].cylinders===2&&<label className="text-sm">Twin firing<select aria-label="Marine twin firing" className={UI.select} value={config.marineFiring??'even'} onChange={e=>updateConfig('marineFiring',e.target.value as SimConfig['marineFiring'])}><option value="even">Evenly spaced</option><option value="paired">Simultaneous pair</option><option value="uneven_twin">180° / 540° · four-stroke</option></select></label>}
+                  <LabeledSlider label="Engine enclosure" value={config.marineEnclosure??.4} min={0} max={1} step={.05} onChange={v=>updateConfig('marineEnclosure',v)} display={`${fmt((config.marineEnclosure??.4)*100)} %`} />
+                  <LabeledSlider label="Propeller load" value={config.marinePropLoad??1} min={0} max={1.5} step={.05} onChange={v=>updateConfig('marinePropLoad',v)} display={`${fmt((config.marinePropLoad??1)*100)} % · Drive mode`} />
+                  <p className="text-xs text-slate-400">Wet exhaust and outlet depth shape the exhaust sound; enclosure muffles intake and machinery. Edit silencers and pipe lengths under Sound. In Drive, propeller resistance rises with RPM squared; 100% matches the reference engine at rated RPM. These installations are illustrative: water effects are acoustic approximations, with no hull, cavitation or boat-speed prediction. Hot-bulb and paraffin examples represent warm operation; their fuel thermodynamics are approximate.</p>
+                </div>}
+              </div>}
+
               {tab==='planes' && <div className="grid gap-4">
                 <div><h3 className="font-semibold text-sky-300">Planes · interwar engine collection</h3><p className="mt-2 text-xs text-slate-400">20 fictional game engines based on real produced designs. Includes older surplus engines. Audio and curves are procedural estimates; propellers are illustrative installations, not aircraft flight models.</p></div>
                 <details className="rounded-xl border border-sky-900 bg-sky-950/30 p-3"><summary className="cursor-pointer text-sm font-medium text-sky-300">Real engine sound references</summary><p className="my-2 text-xs text-slate-400">Compare exhaust bark, idle unevenness and mechanical noise across real installations. These references guide the synthesis; they are not exact sound matches for every engine.</p><div className="grid gap-3">{planeAudioReferences.map(r=><div key={r.url}><a className="text-sm text-sky-300 underline" href={r.url} target="_blank" rel="noreferrer">{r.title}</a><p className="mt-1 text-xs text-slate-400">{r.note}</p></div>)}</div></details>
@@ -1707,14 +1752,14 @@ export default function EngineSimulatorV2() {
                           setRuntime((prev) => ({ ...prev, rpm: clamp(prev.rpm, resolveIdleRpm(config), config.redline - 25) }));
                         } else {
                           setSweepRunning(false);
-                          setSweepCursor((config.applicationType==='plane'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config))));
+                          setSweepCursor((config.applicationType!=='car'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config))));
                         }
                         return nextMode;
                       });
                     }}>
                       <Activity className="mr-2 h-4 w-4" /> Graph: {graphMode === "live" ? "Live trace" : "Dyno curve"}
                     </Button>
-                    <Button className={UI.buttonOutline} variant="outline" onClick={() => { lastLiveTraceSampleRef.current = 0; liveSimulationTimeRef.current = 0; setRuntime({ ...defaultRuntime, rpm: resolveIdleRpm(config) }); setLiveThrottleTarget(defaultRuntime.throttle); setLiveTrace([]); setSweepCursor(1200); setSweepRunning(false); }}>
+                    <Button className={UI.buttonOutline} variant="outline" onClick={() => { lastLiveTraceSampleRef.current = 0; liveSimulationTimeRef.current = 0; setRuntime({ ...defaultRuntime, rpm: resolveIdleRpm(config) }); setLiveThrottleTarget(defaultRuntime.throttle); setLiveTrace([]); setSweepCursor(config.applicationType==='car'?1200:resolveIdleRpm(config)); setSweepRunning(false); }}>
                       <RotateCcw className="mr-2 h-4 w-4" /> Reset
                     </Button>
                   </div>
@@ -1752,9 +1797,9 @@ export default function EngineSimulatorV2() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <LabeledSlider label="Bore" value={config.bore} onChange={(v) => updateConfig("bore", v)} min={60} max={config.applicationType==='plane'?250:110} step={0.1} display={`${fmt(config.bore, 1)} mm`} />
-                    <LabeledSlider label="Stroke" value={config.stroke} onChange={(v) => updateConfig("stroke", v)} min={60} max={config.applicationType==='plane'?250:115} step={0.1} display={`${fmt(config.stroke, 1)} mm`} />
-                    <LabeledSlider label="Compression ratio" value={config.compressionRatio} onChange={(v) => updateConfig("compressionRatio", v)} min={config.applicationType==='plane'?3.5:7.5} max={14} step={0.1} display={`${fmt(config.compressionRatio, 1)} : 1`} />
+                    <LabeledSlider label="Bore" value={config.bore} onChange={(v) => updateConfig("bore", v)} min={config.applicationType==='boat'?30:60} max={config.applicationType!=='car'?250:110} step={0.1} display={`${fmt(config.bore, 1)} mm`} />
+                    <LabeledSlider label="Stroke" value={config.stroke} onChange={(v) => updateConfig("stroke", v)} min={config.applicationType==='boat'?30:60} max={config.applicationType!=='car'?300:115} step={0.1} display={`${fmt(config.stroke, 1)} mm`} />
+                    <LabeledSlider label="Compression ratio" value={config.compressionRatio} onChange={(v) => updateConfig("compressionRatio", v)} min={config.applicationType!=='car'?3.5:7.5} max={14} step={0.1} display={`${fmt(config.compressionRatio, 1)} : 1`} />
                     {config.engineLayout === "v8" ? (
                       <div className="grid gap-2">
                         <div className="text-sm text-slate-300">V8 crank type</div>
@@ -1912,7 +1957,7 @@ export default function EngineSimulatorV2() {
                     <LabeledSlider label="Cam aggression" value={config.camAggression * 100} onChange={(v) => updateConfig("camAggression", v / 100)} min={0} max={100} display={`${fmt(config.camAggression * 100, 0)} %`} />
                     <LabeledSlider label="Exhaust flow trim" value={config.exhaustFlow * 100} onChange={(v) => updateConfig("exhaustFlow", v / 100)} min={0} max={100} display={`${fmt(config.exhaustFlow * 100, 0)} %`} />
                     <LabeledSlider label="Top-end flow bias" value={config.topEndFlowBias * 100} onChange={(v) => updateConfig("topEndFlowBias", v / 100)} min={0} max={100} display={`${fmt(config.topEndFlowBias * 100, 0)} %`} />
-                    <LabeledSlider label="RPM cutoff" value={config.redline} onChange={(v) => updateConfig("redline", v)} min={config.applicationType==='plane'?1000:4000} max={config.applicationType==='plane'?4500:18000} step={100} display={`${fmt(config.redline, 0)} rpm`} />
+                    <LabeledSlider label="RPM cutoff" value={config.redline} onChange={(v) => updateConfig("redline", v)} min={config.applicationType==='boat'?200:config.applicationType==='plane'?1000:4000} max={config.applicationType!=='car'?4500:18000} step={config.applicationType==='boat'?25:100} display={`${fmt(config.redline, 0)} rpm`} />
                   </div>
                 </div>
               )}
@@ -2056,7 +2101,7 @@ export default function EngineSimulatorV2() {
                   <div className="rounded-xl border border-sky-500/30 p-3 text-sm">
                     <label htmlFor="audio-model" className="block mb-2 text-slate-300">Sound model</label>
                     <select id="audio-model" aria-label="Sound model" className={UI.select} value={config.audioModel??'acoustic'} onChange={e=>updateConfig('audioModel',e.target.value as 'legacy'|'acoustic')}>
-                      <option value="legacy" disabled={config.applicationType==='plane'}>Legacy engine voice</option>
+                      <option value="legacy" disabled={config.applicationType!=='car'}>Legacy engine voice</option>
                       <option value="acoustic" disabled={!acousticProfileFor(config)}>Component acoustics · default</option>
                     </select>
                     <p className="mt-2 text-xs text-slate-400">{acousticStatus==='ready'?'Component acoustics active':acousticStatus==='off'?'Audio is off · enable it to audition':acousticStatus==='loading'?'Loading acoustic model…':acousticStatus==='fallback'?'Acoustic model unavailable · established voice is playing':acousticStatus==='unsupported'?'This engine uses its established voice':'Legacy voice selected'}. Audio must be enabled to audition.</p>
@@ -2082,11 +2127,11 @@ export default function EngineSimulatorV2() {
                       {!!config.intakeCamAdvanceDeg && <label>Intake cam advance<select aria-label="Intake cam advance" className={UI.select} value={config.acousticVtcMode??'off'} onChange={e=>updateConfig('acousticVtcMode',e.target.value as SimConfig['acousticVtcMode'])}><option value="off">Base timing</option><option value="on">Advanced {config.intakeCamAdvanceDeg}°</option><option value="auto">Warm loaded sweep approximation</option></select><span className="text-xs text-slate-400">Auto assumes warm engine and moving vehicle; 1050–5700 RPM, estimated load above 50%. Full road-speed, coolant and low-speed ECU logic is not simulated.</span></label>}
                       <LabeledSlider label="Intake pipe length" value={acousticHardware.intakePipe} min={.1} max={2} step={.05} onChange={v=>updateConfig('intakePipeM',v)} display={`${fmt(acousticHardware.intakePipe,2)} m · estimated geometry`} />
                       <LabeledSlider label="Intake pipe bore" value={acousticHardware.intakeBore} min={30} max={120} step={1} onChange={v=>updateConfig('intakeBoreMm',v)} display={`${fmt(acousticHardware.intakeBore)} mm · estimated geometry`} />
-                      <LabeledSlider label="Intake plenum volume" value={acousticHardware.plenum} min={.3} max={config.applicationType==='plane'?40:8} step={.1} onChange={v=>updateConfig('intakePlenumL',v)} display={`${fmt(acousticHardware.plenum,1)} L · estimated geometry`} />
+                      <LabeledSlider label="Intake plenum volume" value={acousticHardware.plenum} min={.3} max={config.applicationType!=='car'?40:8} step={.1} onChange={v=>updateConfig('intakePlenumL',v)} display={`${fmt(acousticHardware.plenum,1)} L · estimated geometry`} />
                       <LabeledSlider label="Serial exhaust silencers" value={acousticHardware.silencerCount} min={0} max={2} step={1} onChange={v=>updateConfig('silencerCount',v)} display={`${acousticHardware.silencerCount} · additional chamber model`} />
                       {!!acousticHardware.silencerCount && <LabeledSlider label="Silencer chamber volume" value={acousticHardware.silencerVolume} min={1} max={25} step={.5} onChange={v=>updateConfig('silencerVolumeL',v)} display={`${fmt(acousticHardware.silencerVolume,1)} L each · estimated`} />}
-                      <LabeledSlider label="Flywheel inertia" value={config.flywheelInertiaKgM2??.18} min={.04} max={1} step={.02} onChange={v=>updateConfig('flywheelInertiaKgM2',v)} display={`${fmt(config.flywheelInertiaKgM2??.18,2)} kg·m² · affects Drive`} />
-                      <LabeledSlider label="Idle speed trim" value={config.idleRpm} min={config.applicationType==='plane'?350:650} max={1200} step={10} onChange={v=>updateConfig('idleRpm',v)} display={`${fmt(resolveIdleRpm(config))} RPM resolved`} />
+                      <LabeledSlider label="Flywheel inertia" value={config.flywheelInertiaKgM2??.18} min={.04} max={config.applicationType==='boat'?20:1} step={.02} onChange={v=>updateConfig('flywheelInertiaKgM2',v)} display={`${fmt(config.flywheelInertiaKgM2??.18,2)} kg·m² · affects Drive`} />
+                      <LabeledSlider label="Idle speed trim" value={config.idleRpm} min={config.applicationType==='boat'?100:config.applicationType==='plane'?350:650} max={1200} step={10} onChange={v=>updateConfig('idleRpm',v)} display={`${fmt(resolveIdleRpm(config))} RPM resolved`} />
                       <LabeledSlider label="Exhaust runner length" value={config.exhaustRunnerM??acousticHardware.runners.reduce((a:number,b:number)=>a+b,0)/acousticHardware.cylinders} min={.15} max={1.5} step={.01} onChange={v=>updateConfig('exhaustRunnerM',v)} display={`${fmt(config.exhaustRunnerM??acousticHardware.runners.reduce((a:number,b:number)=>a+b,0)/acousticHardware.cylinders,2)} m · ${config.exhaustRunnerM===undefined?'inferred':'set'}`} />
                       <LabeledSlider label="Collector length" value={config.collectorLengthM??acousticHardware.collector} min={.3} max={3} step={.05} onChange={v=>updateConfig('collectorLengthM',v)} display={`${fmt(config.collectorLengthM??acousticHardware.collector,2)} m · ${config.collectorLengthM===undefined?'inferred':'set'}`} />
                       <LabeledSlider label="Tailpipe length" value={config.tailpipeLengthM??acousticHardware.tailpipe} min={.5} max={5} step={.05} onChange={v=>updateConfig('tailpipeLengthM',v)} display={`${fmt(config.tailpipeLengthM??acousticHardware.tailpipe,2)} m · ${config.tailpipeLengthM===undefined?'inferred':'set'}`} />
@@ -2173,7 +2218,7 @@ export default function EngineSimulatorV2() {
                         dataKey={graphMode === "dyno" ? "rpm" : "time"}
                         allowDataOverflow
                         type="number"
-                        domain={graphMode === "dyno" ? [(config.applicationType==='plane'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config))), config.redline] : [liveTimeStart, Math.max(5, lastLiveTime)]}
+                        domain={graphMode === "dyno" ? [(config.applicationType!=='car'?resolveIdleRpm(config):Math.max(1200, resolveIdleRpm(config))), config.redline] : [liveTimeStart, Math.max(5, lastLiveTime)]}
                         tick={{ fill: "#cbd5e1", fontSize: 12 }}
                         tickFormatter={(value) => graphMode === "dyno" ? `${Math.round(value)}` : `${Number(value).toFixed(1)}s`}
                       />
