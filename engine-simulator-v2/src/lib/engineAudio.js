@@ -1,3 +1,4 @@
+import {EngineStartCycle} from './engineStartCycle.js';
 // Ported from sventurb0/apex_syndicate engineAudio.js (blob 1afe193869d6a584bddfa2859d3b8960951f5b70).
 import { useEffect, useRef, useState } from "react";
 
@@ -699,7 +700,22 @@ export function useEngineAudio(config, point, enabled, throttle) {
         if (!localCtx || !localNodes || localCtx.state !== 'running') return;
         const s = stateRef.current;
         const localConfig = s.config;
-        const targetPoint = s.point;
+        let targetPoint = s.point;
+        let starting;
+        if(localConfig.applicationType==='plane'){
+          if(!localNodes.startCycle||localNodes.startProfile!==localConfig.gameMeta?.name){
+            localNodes.startProfile=localConfig.gameMeta?.name;
+            localNodes.startCycle=new EngineStartCycle(localConfig);
+          }
+          const cycle=localNodes.startCycle;cycle.config=localConfig;
+          if(localNodes.startCommand!==localConfig.startCommand){
+            localNodes.startCommand=localConfig.startCommand;
+            if(localConfig.startCommand?.action==='restart'){cycle.rpm=0;cycle.state='stopped';cycle.start();}
+            if(localConfig.startCommand?.action==='stop')cycle.stop();
+          }
+          starting=cycle.step(.02,s.point.rpm);
+          targetPoint={...s.point,rpm:starting.rpm};
+        }
         const localThrottle = s.throttle;
         const previousAudioPoint = audioSmoothRef.current || targetPoint;
         const rpmDelta = targetPoint.rpm - (previousAudioPoint.rpm || targetPoint.rpm);
@@ -764,7 +780,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
           const engineLoad=localConfig.applicationType==='boat'&&localConfig.marineDrive ? manifoldLoad*(.72+.28*shaftLoad) : localConfig.applicationType==='car'
             ? clamp(manifoldLoad*(.6+.4*(targetPoint.ve??1))*.84+.16*clamp((targetPoint.mapKpa-100)/100,0,1),0,1)
             : manifoldLoad;
-          localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),components,rpm:targetPoint.rpm,throttle:localThrottle,load:engineLoad,rotaryBlip:localConfig.rotaryBlip,airspeed:(localConfig.vehicleSpeedKph??0)/3.6,header:localConfig.headerType,exhaust:localConfig.exhaustType});
+          localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),components,rpm:targetPoint.rpm,firing:starting?.firing,starter:starting?.starter,throttle:localThrottle,load:engineLoad,rotaryBlip:localConfig.rotaryBlip,airspeed:(localConfig.vehicleSpeedKph??0)/3.6,header:localConfig.headerType,exhaust:localConfig.exhaustType});
           const levels=[micProfile.exhaust*(1.5+localConfig.engineLoudness*.85),micProfile.intake*(.7+localConfig.engineLoudness*.3),micProfile.block,micProfile.air*2];
           const flyby=localConfig.applicationType==='plane'&&localConfig.micPosition==='runway';
           // Circular demonstration flight past a stationary listener. The changing
@@ -790,8 +806,8 @@ export function useEngineAudio(config, point, enabled, throttle) {
         const blower = blowerVoice(localConfig, localPoint, localThrottle, localCtx.sampleRate);
         localNodes.blowerOsc.frequency.setTargetAtTime(blower.frequency, localCtx.currentTime, 0.06);
         localNodes.blowerHarmonic.frequency.setTargetAtTime(blower.frequency * 2, localCtx.currentTime, 0.06);
-        localNodes.blowerGain.gain.setTargetAtTime(blower.gain * getMicProfile(localConfig.micPosition).air, localCtx.currentTime, 0.06);
-        localNodes.blowerHarmonicGain.gain.setTargetAtTime(blower.harmonicGain * getMicProfile(localConfig.micPosition).air, localCtx.currentTime, 0.06);
+        localNodes.blowerGain.gain.setTargetAtTime(blower.gain * (starting?.firing??1) * getMicProfile(localConfig.micPosition).air, localCtx.currentTime, 0.06);
+        localNodes.blowerHarmonicGain.gain.setTargetAtTime(blower.harmonicGain * (starting?.firing??1) * getMicProfile(localConfig.micPosition).air, localCtx.currentTime, 0.06);
         const load = clamp((localPoint.mapKpa - 30) / 170, 0, 1);
         const throttleAudio = clamp(localThrottle, 0, 1);
         const activeAudio = clamp(Math.max(throttleAudio, load * 0.65), 0, 1);

@@ -112,7 +112,7 @@ export class EngineAcousticModel {
       this.lastControlThrottle=clamp(message.throttle,0,1);
     }
     this.target={...this.target,...message};
-    if(this.profile.rotary&&this.target.rotaryBlip){
+    if(this.target.firing===0||(this.profile.rotary&&this.target.rotaryBlip)){
       // Ignition cut must also cancel queued afterfires. Valve/rotation/propeller
       // layers continue; releasing the cut restores combustion through blipGain.
       this.releaseFuel=0;this.afterDelay.fill(0);this.afterEnergy.fill(0);
@@ -233,7 +233,9 @@ export class EngineAcousticModel {
         }
         const volume=clamp(Math.sqrt(p.perCylinderL/.55),.65,1.5)*clamp((p.compression/10)**.25,.85,1.18);
         const limiter=!p.plane&&!p.marine&&this.rpm>=p.redline-50 && Math.floor(this.events/p.cylinders)%2===0?0:1;
-        const amplitude=(.20+this.load*.80)*this.fuel*variation*volume*limiter*this.blipGain;
+        const firing=clamp(t.firing??1,0,1);
+        const catches=firing===1?1:(this.noise()+1)/2<firing?(.6+.4*firing):0;
+        const amplitude=catches*(.20+this.load*.80)*this.fuel*variation*volume*limiter*this.blipGain;
         this.lastPulseAmplitude=amplitude;
         if(p.marine){
           if(p.wet||p.submerged){
@@ -242,7 +244,7 @@ export class EngineAcousticModel {
           if(p.hotBulb)this.hotKnock+=amplitude*.7;
         }
         if(!p.turbo)this.pulseDecay[cylinder]=Math.exp(-1/(sr*p.pulseMs*.001*(1+this.noise()*(p.aircraftSource?.22:.06)*p.texture)));
-        if(p.aircraftSource&&!p.twoStroke){
+        if(p.aircraftSource&&!p.twoStroke&&catches>0){
           this.valveDelay[cylinder]=sr*60/Math.max(350,this.rpm)*.65;
           if(p.injection==='carb'&&!(p.rotary&&t.rotaryBlip)&&this.releaseFuel>.04&&this.afterDelay[cylinder]<=0&&this.noise()+1<this.releaseFuel*.28*p.texture){
             this.afterDelay[cylinder]=sr*(.012+(this.noise()+1)*.018);
@@ -259,7 +261,7 @@ export class EngineAcousticModel {
         // Exhaust blowdown includes turbulent broadband energy. NA high-speed
         // pulses should not be identical electronic waveforms; turbine damping
         // retains the approved turbo combustion character.
-        if(p.aircraftSource&&this.afterDelay[c]>0){
+        if(p.aircraftSource&&t.firing!==0&&this.afterDelay[c]>0){
           this.afterDelay[c]--;
           if(this.afterDelay[c]<=0){this.slow[c]+=this.afterEnergy[c];this.fast[c]+=this.afterEnergy[c];this.afterfireCount++;}
         }
@@ -352,7 +354,7 @@ export class EngineAcousticModel {
       // Tame broadband induction rush on large multi-bank and radial engines.
       const intakeThrottle=bigProp?Math.min(this.throttle,.5):this.throttle;
       const intakeRpmTrim=bigProp?Math.min(1,halfwayRpm/Math.max(1,this.rpm)):1;
-      intake[i]=(excitation+resonated*.6)*intakeThrottle*intakeRpmTrim*lift*cleanerGain*secondary*intakeGain*this.active*.075;
+      intake[i]=(excitation+resonated*.6)*(p.plane?clamp(this.rpm/300,0,1):1)*intakeThrottle*intakeRpmTrim*lift*cleanerGain*secondary*intakeGain*this.active*.075;
       this.mechLow+=(air-this.mechLow)*.08;
       this.injectorEnv*=tickDecay;this.pumpEnv*=pumpDecay;
       this.pumpPhase+=this.rpm/120*3/sr;
@@ -377,7 +379,9 @@ export class EngineAcousticModel {
         // A quiet gear mesh with broadband tooth contact, not a pure siren.
         drive=drive*.22+this.gearNoise*(p.camDrive==='gear'?.003:0);
       }
-      mechanical[i]=(valveNoise+injectorTick+drive+aircraftMechanical)*this.active;
+      const rotating=clamp(this.rpm/120,0,1);
+      const starter=(t.starter??0)*(.014*air+.012*Math.sin(this.drivePhase*2*Math.PI))*rotating;
+      mechanical[i]=((valveNoise+injectorTick+drive+aircraftMechanical)*rotating+starter)*this.active;
       if(p.marine){
         // Port-controlled two-strokes have no poppet-valve or cam-drive layer.
         this.hotKnock*=Math.exp(-1/(sr*.009));

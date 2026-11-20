@@ -1342,6 +1342,7 @@ export default function EngineSimulatorV2() {
   const [graphPage, setGraphPage] = useState<GraphPage>("power");
   const [diagLeftMetric, setDiagLeftMetric] = useState<DiagnosticMetricKey>("vePct");
   const [diagRightMetric, setDiagRightMetric] = useState<DiagnosticMetricKey>("mapKpa");
+  const [startCommand,setStartCommand]=useState<{action:string;serial:number}>();
   const [passSerial,setPassSerial]=useState(0);
   const [holdSpeed,setHoldSpeed]=useState(false);
   const [holdRpm,setHoldRpm]=useState(2500);
@@ -1393,7 +1394,7 @@ export default function EngineSimulatorV2() {
   const userPresets = useMemo(() => filteredPresets.filter((p) => p.group === "saved" && p.config.applicationType!=='plane'&&p.config.applicationType!=='boat'), [filteredPresets]);
 
   const acousticHardware = useMemo(()=>acousticProfileFor({...config,acousticIdleRpm:resolveIdleRpm(config)}),[config]);
-  const { ensureAudio, acousticStatus } = useEngineAudio({...config,passSerial,marineDrive:graphMode==="live",acousticIdleRpm:resolveIdleRpm(config)}, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
+  const { ensureAudio, acousticStatus } = useEngineAudio({...config,startCommand,passSerial,marineDrive:graphMode==="live",acousticIdleRpm:resolveIdleRpm(config)}, graphMode === "dyno" && sweepRunning ? sweepPoint : livePoint, audioEnabled, graphMode === "dyno" && sweepRunning ? 1 : runtime.throttle);
 
   useEffect(() => {
     runRuntimeSelfChecks();
@@ -1645,6 +1646,10 @@ export default function EngineSimulatorV2() {
                   </label>
                   {config.applicationType!=='boat'&&<Button className={UI.buttonPrimary} onClick={async()=>{if(!await ensureAudio())return;setAudioEnabled(true);setRunning(true);setSweepRunning(false);setGraphMode('live');updateConfig('micPosition',config.applicationType==='plane'?'runway':'roadside');setPassSerial(n=>n+1)}}>{config.applicationType==='plane'?'Fly past':'Drive past'}</Button>}
                 </div>
+                {config.applicationType==='plane'&&<div className="flex gap-2">
+                  <Button className={UI.buttonOutline} onClick={async()=>{if(!await ensureAudio())return;setAudioEnabled(true);setStartCommand({action:'restart',serial:Date.now()})}}>Start engine</Button>
+                  <Button className={UI.buttonOutline} onClick={()=>setStartCommand({action:'stop',serial:Date.now()})}>Cut ignition</Button>
+                </div>}
                 <label className="flex items-center gap-2 text-xs">Throttle <input className="min-w-0 flex-1" type="range" min={0} max={100} value={Math.round(liveThrottleTarget*100)} onChange={e=>updateRuntime('throttle',Number(e.target.value)/100)}/>{Math.round(liveThrottleTarget*100)}%</label>
                 <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={holdSpeed} onChange={e=>{setHoldSpeed(e.target.checked);setGraphMode('live');setSweepRunning(false)}}/>Hold RPM {holdSpeed&&<input aria-label="Held engine speed" className="w-20 rounded bg-slate-800 px-2" type="number" min={resolveIdleRpm(config)} max={config.redline-25} step={25} value={holdRpm} onChange={e=>setHoldRpm(Number(e.target.value))}/>}<span className="ml-auto tabular-nums">{Math.round(runtime.rpm)} rpm</span></label>
               </div>
