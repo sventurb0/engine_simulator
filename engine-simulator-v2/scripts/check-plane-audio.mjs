@@ -38,11 +38,11 @@ const golden=JSON.parse(fs.readFileSync(root+'scripts/fixtures/plane-audio-appro
 for(const test of golden.cases){
   const {a}=run(test.config,{rpm:test.rpm,seconds:golden.seconds});
   const hash=createHash('sha256');a.forEach(c=>hash.update(Buffer.from(c.buffer)));
-  const changed=['plane-flat4','plane-v8','plane-rotary9'].includes(test.name) || (test.name.startsWith('previous-pass-') && test.config.engineLayout==='v12');
+  const changed=['plane-flat4','plane-v8','plane-rotary9','plane-w12','plane-flat2'].includes(test.name) || (test.name.startsWith('previous-pass-') && ['v12','i6','radial5','radial9','radial14'].includes(test.config.engineLayout));
   if(changed)assert.notEqual(hash.digest('hex'),test.sha256,test.name+' receives the requested pass');
   else assert.equal(hash.digest('hex'),test.sha256,test.name+' approved waveform');
 }
-console.log('PASS: preserved car/flat-twin/W and previous-pass waveforms; requested aircraft voices updated.');
+console.log('PASS: preserved car and unaffected aircraft waveforms; requested aircraft voices updated.');
 
 for(const preset of planePresets){
   const c=preset.config;
