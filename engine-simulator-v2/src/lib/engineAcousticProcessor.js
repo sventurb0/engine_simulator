@@ -130,7 +130,10 @@ export class EngineAcousticModel {
     const tailDelay=p.tailpipe*2*sr/speed;
     const restriction=p.exhaust==='restrictive'?.65:p.exhaust==='race'?1.3:p.exhaust==='performance'?1.08:1;
     const catalyst=p.catalyst==='none'?1.15:p.catalyst==='high_flow'?1.06:.95;
-    const lp=1-Math.exp(-2*Math.PI*p.cutoff*restriction*catalyst/sr),hp=Math.exp(-2*Math.PI*32/sr);
+    const highBank=p.plane&&p.layout==='v12';
+    const doubleRow=p.plane&&p.layout==='radial14';
+    const exhaustBandwidth=2*Math.PI*p.cutoff*restriction*catalyst/sr;
+    const hp=Math.exp(-2*Math.PI*32/sr);
     const slowDecay=Math.exp(-1/(sr*p.pulseMs*.001)),fastDecay=Math.exp(-1/(sr*.00035));
     // A lightly filled cylinder has a softer pressure front at the same speed.
     const lightFrontDecay=Math.exp(-1/(sr*.00078)),loadedFrontDecay=Math.exp(-1/(sr*.00030));
@@ -166,6 +169,9 @@ export class EngineAcousticModel {
     const inertiaScale=clamp(.18/p.flywheel,.3,2.4);
     const overlapFactor=Math.pow(clamp((p.idleOverlap-8)/55,0,1),1.25);
     for(let i=0;i<n;i++){
+      const upperRpm=p.plane?clamp((this.rpm/p.redline-.72)/.28,0,1):0;
+      const topCut=doubleRow?.58:highBank?1-.34*upperRpm:1;
+      const lp=1-Math.exp(-exhaustBandwidth*topCut);
       this.rpm+=(clamp(t.rpm??900,0,14000)-this.rpm)*smoothing;
       this.throttle+=(clamp(t.throttle??0,0,1)-this.throttle)*smoothing;
       this.load+=(clamp(t.load??0,0,1)-this.load)*smoothing;
@@ -209,7 +215,7 @@ export class EngineAcousticModel {
           const bank=p.banks[cylinder];
           const strength=unevenBanks?.85:workingRadial?.62:courier?.42:.30;
           this.bankCharge[bank]=.88*this.bankCharge[bank]+.12*this.noise();
-          const bankRoar=p.layout==='v12'||p.layout==='w12';
+          const bankRoar=p.layout==='v12'||p.layout==='w12'||p.layout==='radial14';
           const lowSpeedWeight=clamp(1-this.rpm/halfwayRpm,0,1);
           const bankDepth=bankRoar?1.8+2.2*lowSpeedWeight:1;
           variation*=1+p.texture*strength*(bankDepth*this.bankCharge[bank]+.42*this.noise());
@@ -306,9 +312,9 @@ export class EngineAcousticModel {
         // Rear row radiates through the front row and collector. Emphasise
         // the individual seven-cylinder rows while retaining the shaft speed.
         this.bankBody[1]+=(outputR-this.bankBody[1])*bodyLp;
-        outputR=.30*outputR+.56*this.bankBody[1];
+        outputR=.16*outputR+.28*this.bankBody[1];
         this.bankBody[0]+=(outputL-this.bankBody[0])*bodyLp;
-        outputL=.72*outputL+.46*this.bankBody[0];
+        outputL=.80*outputL+.86*this.bankBody[0];
       }
       if(p.aircraftBank){
         // Retain the low exhaust-bank order at actual engine RPM. V12s have
@@ -402,7 +408,7 @@ export class EngineAcousticModel {
         const angle=2*Math.PI*this.propPhase;
         const blade=Math.sin(2*Math.PI*this.propPhase)+.3*Math.sin(4*Math.PI*this.propPhase);
         const bladeWake=p.aircraftBank&&p.cylinders===12 ? .45+.9*(.5+.5*Math.cos(angle))**3 : 1;
-        const wash=bigProp?.16+.20*(.5+.5*Math.cos(angle))**2:bladeWake;
+        const wash=doubleRow?.04+.05*(.5+.5*Math.cos(angle))**2:bigProp?.16+.20*(.5+.5*Math.cos(angle))**2:bladeWake;
         const washLevel=(washRpm/p.redline)**2*Math.min(loading,.575);
         const bladeLevel=fraction*fraction*loading;
         propSound=(blade*(bigProp?.035:.055)*bladeLevel+wash*this.propNoiseLow*(.025+.13*clamp((tipMach-.6)/.4,0,1))*washLevel)*p.propLevel*this.active;

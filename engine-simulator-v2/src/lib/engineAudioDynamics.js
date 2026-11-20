@@ -10,8 +10,9 @@ export function blowerVoice(config, point, throttle, sampleRate = 48000) {
   const frequency = clamp(shaftHz * order, 80, Math.min(9000, sampleRate * 0.2));
   const load = clamp(throttle, 0, 1);
   const boost = clamp((point.boostPsi ?? 0) / Math.max(1, config.scBoostCap ?? 8), 0, 1);
+  const rowDamping=config.applicationType==='plane'&&config.engineLayout==='radial14'?.08:1;
   const gain = config.induction === 'supercharger'
-    ? loudness * (centrifugal ? 0.010 : 0.014) * load * (0.25 + 0.75 * boost)
+    ? loudness * rowDamping * (centrifugal ? 0.010 : 0.014) * load * (0.25 + 0.75 * boost)
     : 0;
   return { frequency, gain, harmonicGain: gain * (centrifugal ? 0.14 : 0.28) };
 }
