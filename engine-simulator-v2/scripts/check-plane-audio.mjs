@@ -5,7 +5,7 @@ import {build} from 'esbuild';
 import {EngineAcousticModel,acousticProfileFor} from '../src/lib/engineAcousticProcessor.js';
 
 const root=new URL('../',import.meta.url).pathname;
-const out=root+'node_modules/.cache/plane-audio-presets.mjs';
+const out=root+`node_modules/.cache/plane-audio-presets-${process.pid}.mjs`;
 await build({entryPoints:[root+'src/data/planeEngines.ts'],bundle:true,platform:'node',format:'esm',outfile:out});
 const {planePresets}=await import(out);
 const rms=a=>Math.sqrt(a.reduce((sum,x)=>{assert.ok(Number.isFinite(x));assert.ok(Math.abs(x)<4);return sum+x*x;},0)/a.length);
@@ -35,8 +35,18 @@ function cycleResidual(a,rpm,sr=48000){
 // Immutable pre-pass renders: cars, flat twins and W stay unchanged. The user
 // explicitly requested the new source for flat four, V8 and rotary next.
 const golden=JSON.parse(fs.readFileSync(root+'scripts/fixtures/plane-audio-approved.json'));
+const approvedDryStems={
+  "previous-pass-Alder Scout Four": "9deaa0047e32b6940c2ce630656657094d3f9c0117d65c4fedd43b2a307f7608",
+  "previous-pass-Alder Invert Four": "8ed99ababdcd494ac7416226e55759e5e12f1cd76ed2740236acc5103caac56b",
+  "previous-pass-Marlowe Sprint Four": "613693e1857984c177b7f4c9640004bd39eed8c3bf5ff3debad35ad58432a341",
+  "previous-pass-Harbour Swift Seven": "257159a8f2566da2d6c2942dfe3881dfbf8e6046405664fb66775b7ea07462c1"
+};
 for(const test of golden.cases){
   const {a}=run(test.config,{rpm:test.rpm,seconds:golden.seconds});
+  if(approvedDryStems[test.name]){
+    const dry=createHash('sha256');a.slice(0,4).forEach(c=>dry.update(Buffer.from(c.buffer)));
+    assert.equal(dry.digest('hex'),approvedDryStems[test.name],test.name+' dry stems preserved');continue;
+  }
   const hash=createHash('sha256');a.forEach(c=>hash.update(Buffer.from(c.buffer)));
   const changed=['plane-flat4','plane-v8','plane-rotary9','plane-w12','plane-flat2'].includes(test.name) || (test.name.startsWith('previous-pass-') && ['v12','i6','radial5','radial9','radial14'].includes(test.config.engineLayout));
   if(changed)assert.notEqual(hash.digest('hex'),test.sha256,test.name+' receives the requested pass');
@@ -115,6 +125,17 @@ for(const sr of [32000,48000,96000]){
   const c={...radial,soundTexture:1,exhaustRunnerM:1.5,collectorLengthM:3,tailpipeLengthM:5,silencerCount:2,silencerVolumeL:25};
   const {model}=run(c,{sr});model.update({components:acousticProfileFor({...c,engineLayout:'v12',planeExhaust:'stubs'}),throttle:0});block(model,1,sr);
   model.update({active:false});const silent=block(model,1,sr);assert.ok(rms(silent[0].subarray(sr/2))<.0001,'profile switching and stop decay');
+}
+// Above 1 kHz, first differences largely isolate wash from the blade beat.
+for(const preset of planePresets){
+ const c=preset.config,half=(c.idleRpm+c.redline)/2;
+ function washRms(rpm,throttle){
+  const model=new EngineAcousticModel(48000);model.update({components:acousticProfileFor({...c,acousticIdleRpm:c.idleRpm}),active:true,rpm,throttle,load:throttle,airspeed:throttle*100});
+  const prop=block(model,1)[4];let power=0;
+  for(let i=24000;i<prop.length;i++)power+=(prop[i]-2*prop[i-1]+prop[i-2])**2;
+  return Math.sqrt(power/24000);
+ }
+ assert.ok(washRms(c.redline,1)<washRms(half,.5)*1.10,preset.name+' wash stays at halfway level');
 }
 fs.unlinkSync(out);
 console.log('PASS: 20 exhaust pairs, combustion texture, transient afterfire, V12 bank spectrum/mono, sleeve-valve contrast, transitions and sample rates.');

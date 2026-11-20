@@ -150,6 +150,7 @@ export class EngineAcousticModel {
     const bigProp=unevenBanks||workingRadial||(p.plane&&p.layout==='w12');
     const courier=p.plane&&p.layout==='i6';
     const flatTwin=p.plane&&p.layout==='flat2';
+    const halfwayRpm=(p.idle+p.redline)*.5;
     const shortCollector=p.plane&&p.layout==='radial5';
     const releaseDecay=Math.exp(-1/(sr*.42));
     const gearLp=1-Math.exp(-2*Math.PI*650/sr);
@@ -208,7 +209,15 @@ export class EngineAcousticModel {
           const bank=p.banks[cylinder];
           const strength=unevenBanks?.85:workingRadial?.62:courier?.42:.30;
           this.bankCharge[bank]=.88*this.bankCharge[bank]+.12*this.noise();
-          variation*=1+p.texture*strength*(this.bankCharge[bank]+.42*this.noise());
+          const bankRoar=p.layout==='v12'||p.layout==='w12';
+          const lowSpeedWeight=clamp(1-this.rpm/halfwayRpm,0,1);
+          const bankDepth=bankRoar?1.8+2.2*lowSpeedWeight:1;
+          variation*=1+p.texture*strength*(bankDepth*this.bankCharge[bank]+.42*this.noise());
+          if(bankRoar){
+            // Keep each bank's firing accents tied to the four-stroke cycle.
+            const strokeAccent=Math.cos(2*Math.PI*cylinder/p.cylinders);
+            variation*=1+p.texture*(.28+.55*lowSpeedWeight)*strokeAccent;
+          }
           if(this.noise()+1<strength*p.texture*(.025+.09*aircraftIdle))variation*=.48;
         }
         if(p.car){
@@ -249,7 +258,8 @@ export class EngineAcousticModel {
           if(this.afterDelay[c]<=0){this.slow[c]+=this.afterEnergy[c];this.fast[c]+=this.afterEnergy[c];this.afterfireCount++;}
         }
         const envelope=this.slow[c]-this.fast[c];
-        const turbulence=p.turbo?0:(p.aircraftSource?.22+.30*this.load:.025+.045*this.load)*p.texture;
+        const upperRange=p.plane?clamp((this.rpm-halfwayRpm)/(p.redline-halfwayRpm),0,1):0;
+        const turbulence=p.turbo?0:(p.aircraftSource?.22+.30*this.load:.025+.045*this.load)*p.texture*(bigProp?1-.72*upperRange:1);
         let flow=turbulence?this.noise():0;
         if(p.aircraftSource){this.flowNoise[c]+=(flow-this.flowNoise[c])*flowLp;flow=this.flowNoise[c]*3;}
         const pulse=envelope*(1+flow*turbulence)*(flatTwin?1.12:1);
@@ -276,7 +286,8 @@ export class EngineAcousticModel {
         const direct=b===0?bank0:b===1?bank1:bank2;
         const echo=p.openStubs?0:read(this.collectors[b],this.index,tailDelay+b*.3*sr/speed);
         this.collectors[b][this.index]=direct+echo*(shortCollector?.07:.23);
-        let filtered=direct+echo*(shortCollector?.14:.35);
+        const courierTop=courier?clamp((this.rpm-halfwayRpm)/(p.redline-halfwayRpm),0,1):0;
+        let filtered=direct+echo*(shortCollector?.14:.35-.29*courierTop);
         for(let stage=0;stage<p.silencerCount;stage++){
           const line=this.silencerLines[b*2+stage];line[this.index]=filtered;
           // Serial expansion chambers: delayed negative reflection and loss.
@@ -332,7 +343,10 @@ export class EngineAcousticModel {
       const resonated=(1-resB)*.5*(excitation-this.resonatorX2)+resA*this.resonatorY1-resB*this.resonatorY2;
       this.resonatorX2=this.resonatorX1;this.resonatorX1=excitation;
       this.resonatorY2=this.resonatorY1;this.resonatorY1=resonated;
-      intake[i]=(excitation+resonated*.6)*this.throttle*lift*cleanerGain*secondary*intakeGain*this.active*.075;
+      // Tame broadband induction rush on large multi-bank and radial engines.
+      const intakeThrottle=bigProp?Math.min(this.throttle,.5):this.throttle;
+      const intakeRpmTrim=bigProp?Math.min(1,halfwayRpm/Math.max(1,this.rpm)):1;
+      intake[i]=(excitation+resonated*.6)*intakeThrottle*intakeRpmTrim*lift*cleanerGain*secondary*intakeGain*this.active*.075;
       this.mechLow+=(air-this.mechLow)*.08;
       this.injectorEnv*=tickDecay;this.pumpEnv*=pumpDecay;
       this.pumpPhase+=this.rpm/120*3/sr;
@@ -377,7 +391,10 @@ export class EngineAcousticModel {
       this.propRpm=this.rpm*p.propRatio;this.bladeHz=this.propRpm/60*p.propBlades;
       if(p.propeller){
         this.propPhase=(this.propPhase+this.bladeHz/sr)%1;
-        const tipSpeed=Math.hypot(Math.PI*p.propDiameter*this.propRpm/60,clamp(t.airspeed??0,0,150));
+        // Limit stochastic wash (including bandwidth) to the halfway operating
+        // point. The blade phase still follows actual shaft speed.
+        const washRpm=Math.min(this.rpm,halfwayRpm);
+        const tipSpeed=Math.hypot(Math.PI*p.propDiameter*washRpm*p.propRatio/60,Math.min(30,clamp(t.airspeed??0,0,150)));
         const tipMach=tipSpeed/343;
         const fraction=clamp(this.rpm/p.redline,0,1.2),loading=.15+.85*this.throttle;
         const noise=this.noise();
@@ -386,7 +403,9 @@ export class EngineAcousticModel {
         const blade=Math.sin(2*Math.PI*this.propPhase)+.3*Math.sin(4*Math.PI*this.propPhase);
         const bladeWake=p.aircraftBank&&p.cylinders===12 ? .45+.9*(.5+.5*Math.cos(angle))**3 : 1;
         const wash=bigProp?.16+.20*(.5+.5*Math.cos(angle))**2:bladeWake;
-        propSound=(blade*(bigProp?.035:.055)+wash*this.propNoiseLow*(.025+.13*clamp((tipMach-.6)/.4,0,1)))*fraction*fraction*loading*p.propLevel*this.active;
+        const washLevel=(washRpm/p.redline)**2*Math.min(loading,.575);
+        const bladeLevel=fraction*fraction*loading;
+        propSound=(blade*(bigProp?.035:.055)*bladeLevel+wash*this.propNoiseLow*(.025+.13*clamp((tipMach-.6)/.4,0,1))*washLevel)*p.propLevel*this.active;
       }
       this.transitionP*=transitionDecay;
       // With the older four-channel API the intake transition already contains
