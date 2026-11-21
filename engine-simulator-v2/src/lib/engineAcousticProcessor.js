@@ -90,7 +90,7 @@ export class EngineAcousticModel {
     this.cylinderMixture=new Float64Array(profile.cylinders);
     this.afterDelay=new Float64Array(profile.cylinders);this.afterEnergy=new Float64Array(profile.cylinders);
     this.valveEnvelope=new Float64Array(profile.cylinders);this.valveDelay=new Float64Array(profile.cylinders);
-    this.bankCharge=[0,0,0];this.valveRing1=0;this.valveRing2=0;this.gearNoise=0;this.shaftDrift=0;this.dischargeFlow=0;this.exhaustEnvelope=0;this.marineLow=[0,0];this.waterLow=0;this.hotKnock=0;
+    this.compressionEnv=0;this.compressionLow=0;this.pistonPhase=0;this.bankCharge=[0,0,0];this.valveRing1=0;this.valveRing2=0;this.gearNoise=0;this.shaftDrift=0;this.dischargeFlow=0;this.exhaustEnvelope=0;this.marineLow=[0,0];this.waterLow=0;this.hotKnock=0;
     this.lastControlThrottle=0;this.releaseFuel=0;this.afterfireCount=0;
     this.bankBody=Array(profile.bankCount).fill(0);
     this.cylinderTrim=Array.from({length:profile.cylinders},(_,c)=>1+profile.scatter*.6*Math.sin((c+1)*2.3999632297));
@@ -237,6 +237,7 @@ export class EngineAcousticModel {
         const catches=firing===1?1:(this.noise()+1)/2<firing?(.6+.4*firing):0;
         const amplitude=catches*(.20+this.load*.80)*this.fuel*variation*volume*limiter*this.blipGain;
         this.lastPulseAmplitude=amplitude;
+        if(p.plane)this.compressionEnv+=1/Math.sqrt(p.cylinders);
         if(p.marine){
           if(p.wet||p.submerged){
             this.dischargeFlow=Math.min(1,this.dischargeFlow+amplitude*.3/Math.sqrt(p.cylinders));
@@ -244,8 +245,8 @@ export class EngineAcousticModel {
           if(p.hotBulb)this.hotKnock+=amplitude*.7;
         }
         if(!p.turbo)this.pulseDecay[cylinder]=Math.exp(-1/(sr*p.pulseMs*.001*(1+this.noise()*(p.aircraftSource?.22:.06)*p.texture)));
-        if(p.aircraftSource&&!p.twoStroke&&catches>0){
-          this.valveDelay[cylinder]=sr*60/Math.max(350,this.rpm)*.65;
+        if((p.aircraftSource||(p.plane&&(t.firing??1)<1))&&!p.twoStroke){
+          this.valveDelay[cylinder]=sr*60/Math.max(60,this.rpm)*.65;
           if(p.injection==='carb'&&!(p.rotary&&t.rotaryBlip)&&this.releaseFuel>.04&&this.afterDelay[cylinder]<=0&&this.noise()+1<this.releaseFuel*.28*p.texture){
             this.afterDelay[cylinder]=sr*(.012+(this.noise()+1)*.018);
             this.afterEnergy[cylinder]=(.2+.4*this.releaseFuel)*volume*this.fuel;
@@ -354,7 +355,7 @@ export class EngineAcousticModel {
       // Tame broadband induction rush on large multi-bank and radial engines.
       const intakeThrottle=bigProp?Math.min(this.throttle,.5):this.throttle;
       const intakeRpmTrim=bigProp?Math.min(1,halfwayRpm/Math.max(1,this.rpm)):1;
-      intake[i]=(excitation+resonated*.6)*(p.plane?clamp(this.rpm/300,0,1):1)*intakeThrottle*intakeRpmTrim*lift*cleanerGain*secondary*intakeGain*this.active*.075;
+      intake[i]=(excitation+resonated*.6)*(p.plane?clamp(t.firing??1,0,1)*clamp(this.rpm/300,0,1):1)*intakeThrottle*intakeRpmTrim*lift*cleanerGain*secondary*intakeGain*this.active*.075;
       this.mechLow+=(air-this.mechLow)*.08;
       this.injectorEnv*=tickDecay;this.pumpEnv*=pumpDecay;
       this.pumpPhase+=this.rpm/120*3/sr;
@@ -364,7 +365,7 @@ export class EngineAcousticModel {
       const injectorTick=air*this.injectorEnv*injectionGain+air*this.pumpEnv*injectionGain*.5;
       let drive=Math.sin(this.drivePhase*2*Math.PI)*(p.camDrive==='gear'?.0035:p.camDrive==='chain'?.0006:p.camDrive==='belt_chain'?.0003:0);
       let aircraftMechanical=0;
-      if(p.aircraftSource){
+      if(p.aircraftSource||(p.plane&&(t.firing??1)<1)){
         let strikes=0;
         for(let c=0;c<p.cylinders;c++){
           if(this.valveDelay[c]>0){this.valveDelay[c]--;if(this.valveDelay[c]<=0)this.valveEnvelope[c]=.7+.3*this.noise();}
@@ -380,7 +381,14 @@ export class EngineAcousticModel {
         drive=drive*.22+this.gearNoise*(p.camDrive==='gear'?.003:0);
       }
       const rotating=clamp(this.rpm/120,0,1);
-      const starter=(t.starter??0)*(.014*air+.012*Math.sin(this.drivePhase*2*Math.PI))*rotating;
+      // Compression strokes and gear teeth follow rotation even without ignition.
+      this.pistonPhase=(this.pistonPhase+this.rpm/60/sr)%1;
+      this.compressionEnv*=Math.exp(-1/(sr*.018));
+      const coldRotation=p.plane?1-clamp(t.firing??1,0,1):0;
+      this.compressionLow+=(this.compressionEnv-this.compressionLow)*(1-Math.exp(-2*Math.PI*85/sr));
+      const compression=(this.compressionEnv-this.compressionLow)*.45+this.compressionEnv*air*.025;
+      const tooth=Math.sin(this.drivePhase*2*Math.PI)*(.3+.7*Math.sin(this.pistonPhase*2*Math.PI)**2);
+      const starter=p.plane?(compression*coldRotation+tooth*(t.starter??0)*.018)*rotating:0;
       mechanical[i]=((valveNoise+injectorTick+drive+aircraftMechanical)*rotating+starter)*this.active;
       if(p.marine){
         // Port-controlled two-strokes have no poppet-valve or cam-drive layer.
