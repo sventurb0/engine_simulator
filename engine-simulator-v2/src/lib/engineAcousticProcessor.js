@@ -50,7 +50,8 @@ export function acousticProfileFor(config={}) {
   // Intervals in average event units. Paired opposed cylinders fire together;
   // Kelvin 2-1-0-0 gives 180/540 crank degrees across a four-stroke cycle.
   const eventGaps=marine&&cylinders===2?config.marineFiring==='paired'?[2,0]:!twoStroke&&config.marineFiring==='uneven_twin'?[.5,1.5]:null:null;
-  const profile={car:config.applicationType==='car',marine,twoStroke,eventGaps,hotBulb:marine&&config.marineCombustion==='hot_bulb',
+  const starterType=config.starterType&&config.starterType!=='auto'?config.starterType:radial?'inertia':'electric';
+  const profile={starterType,car:config.applicationType==='car',marine,twoStroke,eventGaps,hotBulb:marine&&config.marineCombustion==='hot_bulb',
     wet:marine&&config.marineExhaust!=='dry',submerged:marine&&config.marineOutlet==='submerged',enclosure:marine?finite(config.marineEnclosure,.4,0,1):0,
     plane,rotary,radial,firingPositions,bankCount:config.engineLayout==='w12'?3:2,
     openStubs:plane&&config.planeExhaust!=='collector',sleeve:config.sleeveValves===true,
@@ -90,7 +91,7 @@ export class EngineAcousticModel {
     this.cylinderMixture=new Float64Array(profile.cylinders);
     this.afterDelay=new Float64Array(profile.cylinders);this.afterEnergy=new Float64Array(profile.cylinders);
     this.valveEnvelope=new Float64Array(profile.cylinders);this.valveDelay=new Float64Array(profile.cylinders);
-    this.compressionEnv=0;this.compressionLow=0;this.pistonPhase=0;this.bankCharge=[0,0,0];this.valveRing1=0;this.valveRing2=0;this.gearNoise=0;this.shaftDrift=0;this.dischargeFlow=0;this.exhaustEnvelope=0;this.marineLow=[0,0];this.waterLow=0;this.hotKnock=0;
+    this.starterPhase=0;this.starterMeshPhase=0;this.starterRotor=0;this.starterGain=0;this.starterClack=0;this.wasStarterEngaged=false;this.compressionEnv=0;this.compressionLow=0;this.pistonPhase=0;this.bankCharge=[0,0,0];this.valveRing1=0;this.valveRing2=0;this.gearNoise=0;this.shaftDrift=0;this.dischargeFlow=0;this.exhaustEnvelope=0;this.marineLow=[0,0];this.waterLow=0;this.hotKnock=0;
     this.lastControlThrottle=0;this.releaseFuel=0;this.afterfireCount=0;
     this.bankBody=Array(profile.bankCount).fill(0);
     this.cylinderTrim=Array.from({length:profile.cylinders},(_,c)=>1+profile.scatter*.6*Math.sin((c+1)*2.3999632297));
@@ -111,6 +112,10 @@ export class EngineAcousticModel {
       if(drop>.18&&this.rpm>this.profile.idle*1.4)this.releaseFuel=clamp(this.releaseFuel+drop,0,1);
       this.lastControlThrottle=clamp(message.throttle,0,1);
     }
+    const engaged=message.starterEngaged??((message.starter??0)>0);
+    if(engaged!==this.wasStarterEngaged&&message.starter!==undefined)this.starterClack=engaged?.18:.08;
+    this.wasStarterEngaged=engaged;
+    if(this.profile.plane&&message.rpm===0&&message.starter>0&&message.starterEngaged===false)this.rpm=0;
     this.target={...this.target,...message};
     if(this.target.firing===0||(this.profile.rotary&&this.target.rotaryBlip)){
       // Ignition cut must also cancel queued afterfires. Valve/rotation/propeller
@@ -388,7 +393,21 @@ export class EngineAcousticModel {
       this.compressionLow+=(this.compressionEnv-this.compressionLow)*(1-Math.exp(-2*Math.PI*85/sr));
       const compression=(this.compressionEnv-this.compressionLow)*.45+this.compressionEnv*air*.025;
       const tooth=Math.sin(this.drivePhase*2*Math.PI)*(.3+.7*Math.sin(this.pistonPhase*2*Math.PI)**2);
-      const starter=p.plane?(compression*coldRotation+tooth*(t.starter??0)*.018)*rotating:0;
+      const rotorTarget=clamp(t.starterSpeed??((t.starter??0)>0?Math.max(.3,this.rpm/180):0),0,1);
+      this.starterRotor+=(rotorTarget-this.starterRotor)*(1-Math.exp(-1/(sr*.018)));
+      const engaged=t.starterEngaged??((t.starter??0)>0);
+      const compressionDrag=engaged?clamp(this.compressionEnv*Math.sqrt(p.cylinders)*.6,0,1):0;
+      const inertiaStarter=p.starterType==='inertia';
+      const frequency=(inertiaStarter?260+1700*this.starterRotor:180+950*this.starterRotor)*(1-(inertiaStarter?.18:.30)*compressionDrag);
+      this.starterPhase=(this.starterPhase+frequency/sr)%1;
+      this.starterMeshPhase=(this.starterMeshPhase+frequency*2.13/sr)%1;
+      const motorLevel=p.plane?Math.sqrt(this.starterRotor)*.10:0;
+      this.starterGain+=(motorLevel-this.starterGain)*(1-Math.exp(-1/(sr*.012)));
+      const armature=Math.sin(this.starterPhase*2*Math.PI)+.22*Math.sin(this.starterPhase*4*Math.PI)+.10*Math.sin(this.starterMeshPhase*2*Math.PI);
+      const motor=armature*this.starterGain*(1-.28*compressionDrag);
+      this.starterClack*=Math.exp(-1/(sr*.009));
+      const clutch=p.plane?this.starterClack*air*.12:0;
+      const starter=p.plane?(compression*coldRotation+tooth*(t.starter??0)*.018)*rotating+motor+clutch:0;
       mechanical[i]=((valveNoise+injectorTick+drive+aircraftMechanical)*rotating+starter)*this.active;
       if(p.marine){
         // Port-controlled two-strokes have no poppet-valve or cam-drive layer.

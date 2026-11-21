@@ -780,7 +780,7 @@ export function useEngineAudio(config, point, enabled, throttle) {
           const engineLoad=localConfig.applicationType==='boat'&&localConfig.marineDrive ? manifoldLoad*(.72+.28*shaftLoad) : localConfig.applicationType==='car'
             ? clamp(manifoldLoad*(.6+.4*(targetPoint.ve??1))*.84+.16*clamp((targetPoint.mapKpa-100)/100,0,1),0,1)
             : manifoldLoad;
-          localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),components,rpm:targetPoint.rpm,firing:starting?.firing,starter:starting?.starter,throttle:localThrottle,load:engineLoad,rotaryBlip:localConfig.rotaryBlip,airspeed:(localConfig.vehicleSpeedKph??0)/3.6,header:localConfig.headerType,exhaust:localConfig.exhaustType});
+          localNodes.acousticNode.port.postMessage({active:Boolean(useAcoustics),components,rpm:targetPoint.rpm,firing:starting?.firing,starter:starting?.starter,starterSpeed:starting?.starterSpeed,starterEngaged:starting?.starterEngaged,throttle:localThrottle,load:engineLoad,rotaryBlip:localConfig.rotaryBlip,airspeed:(localConfig.vehicleSpeedKph??0)/3.6,header:localConfig.headerType,exhaust:localConfig.exhaustType});
           const levels=[micProfile.exhaust*(1.5+localConfig.engineLoudness*.85),micProfile.intake*(.7+localConfig.engineLoudness*.3),micProfile.block,micProfile.air*2];
           const flyby=localConfig.applicationType==='plane'&&localConfig.micPosition==='runway';
           // Circular demonstration flight past a stationary listener. The changing

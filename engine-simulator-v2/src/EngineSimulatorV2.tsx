@@ -61,6 +61,7 @@ export type SimConfig = {
   propellerBlades?: number;
   propellerDiameterM?: number;
   propellerRatio?: number;
+  starterType?: "auto" | "electric" | "inertia";
   propellerLoudness?: number;
   rotaryBlip?: boolean;
   sleeveValves?: boolean;
@@ -609,6 +610,7 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
     propellerBlades: Math.round(Number.isFinite(config.propellerBlades)?clamp(config.propellerBlades!,2,4):2),
     propellerDiameterM: Number.isFinite(config.propellerDiameterM)?clamp(config.propellerDiameterM!,.8,4.5):2,
     propellerRatio: Number.isFinite(config.propellerRatio)?clamp(config.propellerRatio!,.25,1):1,
+    starterType: coerceOption(config.starterType,["auto","electric","inertia"] as const,"auto"),
     propellerLoudness: Number.isFinite(config.propellerLoudness)?clamp(config.propellerLoudness!,0,1.5):.6,
     rotaryBlip: config.applicationType==='plane'&&config.rotaryBlip===true,
     sleeveValves: config.sleeveValves===true,
@@ -1701,6 +1703,11 @@ export default function EngineSimulatorV2() {
                   <LabeledSlider label="Propeller blades" value={config.propellerBlades??2} min={2} max={4} step={1} onChange={v=>updateConfig('propellerBlades',v)} display={`${config.propellerBlades??2}`} />
                   <LabeledSlider label="Propeller reduction ratio" value={config.propellerRatio??1} min={.25} max={1} step={.01} onChange={v=>updateConfig('propellerRatio',v)} display={`${fmt(config.propellerRatio??1,2)} · ${fmt(displayedPoint.rpm*(config.propellerRatio??1))} prop RPM`} />
                   <LabeledSlider label="Propeller diameter" value={config.propellerDiameterM??2} min={.8} max={4.5} step={.05} onChange={v=>updateConfig('propellerDiameterM',v)} display={`${fmt(config.propellerDiameterM??2,2)} m · estimated`} />
+                  <label className="grid gap-1 text-sm">Starter drive
+                    <select className="rounded bg-slate-800 p-2" value={config.starterType??'auto'} onChange={e=>updateConfig('starterType',e.target.value as 'auto'|'electric'|'inertia')}>
+                      <option value="auto">Factory starter</option><option value="electric">Electric geared motor</option><option value="inertia">Inertia flywheel</option>
+                    </select>
+                  </label>
                   <LabeledSlider label="Propeller loudness" value={config.propellerLoudness??.6} min={0} max={1.5} step={.05} onChange={v=>updateConfig('propellerLoudness',v)} display={`${fmt((config.propellerLoudness??.6)*100)} %`} />
                   {config.engineLayout==='rotary9'&&<label className="text-sm"><input type="checkbox" checked={config.rotaryBlip??false} onChange={e=>updateConfig('rotaryBlip',e.target.checked)}/> Hold ignition cut / blip · combustion stops, propeller coasts at simulated RPM</label>}
                   <p className="text-xs text-slate-400">Use Drive for throttle control, Test setup for altitude, and Sound for microphone position. The rotary ignition cut also removes combustion torque; full historical rotary controls and gyroscopic flight dynamics are not simulated.</p>
