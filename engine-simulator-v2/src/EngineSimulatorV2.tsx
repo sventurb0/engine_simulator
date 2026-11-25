@@ -17,6 +17,8 @@ import { Badge } from "@/components/ui/badge";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine } from "recharts";
 import { Play, Pause, Gauge, Activity, Volume2, RotateCcw } from "lucide-react";
 
+const EngineWorkspace = React.lazy(() => import('./components/EngineWorkspace'));
+
 type InductionType = "na" | "turbo" | "supercharger";
 type EngineLayout = "single" | "i2" | "flat2" | "radial5" | "radial7" | "radial9" | "radial14" | "rotary9" | "w12" | "i3" | "i4" | "i5" | "i6" | "v4" | "v6" | "flat4" | "flat6" | "v8" | "v10" | "v12";
 type TurboFamily = "small" | "medium" | "large";
@@ -2229,7 +2231,10 @@ export default function EngineSimulatorV2() {
             </CardContent>
           </Card>
 
-          <div className="grid gap-6 lg:sticky lg:top-4">
+          <div className="grid min-w-0 gap-6">
+            <React.Suspense fallback={<div className="rounded-2xl border border-slate-700 bg-slate-900 p-8 text-sm text-slate-400">Building engine workspace…</div>}>
+              <EngineWorkspace config={config} rpm={graphMode === 'dyno' && sweepRunning ? sweepPoint.rpm : livePoint.rpm} running={running} startCommand={startCommand} onToggleRunning={() => { setRunning(value => !value); if (running) setSweepRunning(false); }} />
+            </React.Suspense>
             <Card className={UI.card}>
               <CardHeader>
                 <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -2330,8 +2335,3 @@ export default function EngineSimulatorV2() {
     </div>
   );
 }
-
-
-
-
-

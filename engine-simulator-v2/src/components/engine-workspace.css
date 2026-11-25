@@ -1,0 +1,367 @@
+.engine-workspace {
+  --ew-border:#2a3a4b;
+  overflow:hidden;
+  border:1px solid var(--ew-border);
+  border-radius:18px;
+  background:#101b28;
+  color:#dce6ef;
+  min-width:0;
+  box-shadow:0 12px 35px #0002;
+  font-family:inherit
+}
+.ew-header {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  padding:20px 22px 16px;
+  gap:12px
+}
+.ew-eyebrow {
+  font-size:10px;
+  letter-spacing:.24em;
+  color:#84b6d4
+}
+.ew-header h2 {
+  font-size:20px;
+  font-weight:600;
+  line-height:1.4;
+  margin:4px 0
+}
+.ew-header p {
+  font-size:11px;
+  color:#8da2b5
+}
+.ew-header p span {
+  padding:0 5px;
+  color:#526d81
+}
+.ew-button {
+  border:1px solid #35495c;
+  background:#172636;
+  color:#bfcfdb;
+  border-radius:7px;
+  padding:7px 10px;
+  font-size:11px;
+  white-space:nowrap;
+  cursor:pointer;
+  transition:background .15s
+}
+.ew-button:hover {
+  background:#263b50
+}
+.ew-button.ew-active {
+  background:#21455e;
+  border-color:#5888a5;
+  color:#e6f5ff
+}
+.ew-toolbar {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex-wrap:wrap;
+  padding:0 20px 13px
+}
+.ew-toolbar-spacer {
+  flex:1
+}
+.ew-stage {
+  position:relative;
+  border-top:1px solid #263747;
+  border-bottom:1px solid #263747;
+  height:420px;
+  background:#0d151e
+}
+.ew-canvas {
+  height:100%;
+  width:100%;
+  touch-action:none;
+  cursor:grab
+}
+.ew-canvas:active {
+  cursor:grabbing
+}
+.ew-canvas canvas {
+  display:block
+}
+.ew-canvas canvas:focus-visible {
+  outline:2px solid #84b6d4;
+  outline-offset:-3px
+}
+.ew-rpm {
+  position:absolute;
+  left:20px;
+  top:18px;
+  display:grid;
+  pointer-events:none;
+  text-shadow:0 1px 6px #000
+}
+.ew-rpm strong {
+  font-size:24px;
+  font-weight:400;
+  font-variant-numeric:tabular-nums
+}
+.ew-rpm span {
+  font-size:8px;
+  letter-spacing:.18em;
+  color:#8aa2b5
+}
+.ew-rpm small {
+  font-size:10px;
+  color:#7fa3bc;
+  margin-top:7px
+}
+.ew-camera {
+  display:flex;
+  position:absolute;
+  top:18px;
+  right:16px;
+  gap:4px
+}
+.ew-camera button {
+  background:#122231cf;
+  border:1px solid #31475b;
+  border-radius:5px;
+  color:#9ab0c2;
+  padding:5px 7px;
+  text-transform:capitalize;
+  font-size:10px
+}
+.ew-hint {
+  position:absolute;
+  bottom:13px;
+  left:0;
+  right:0;
+  text-align:center;
+  font-size:10px;
+  color:#758c9f;
+  pointer-events:none
+}
+.ew-playback {
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:7px;
+  padding:12px 18px;
+  background:#12202f
+}
+.ew-playback label {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  font-size:10px;
+  color:#8ba3b6;
+  margin-left:auto
+}
+.engine-workspace select {
+  background:#172839;
+  border:1px solid #344a5e;
+  color:#c4d4e1;
+  border-radius:5px;
+  font-size:11px;
+  padding:6px;
+  max-width:100%
+}
+.ew-adjust {
+  padding:0 20px 12px;
+  display:flex;
+  align-items:center;
+  gap:15px
+}
+.ew-adjust label {
+  display:flex;
+  align-items:center;
+  gap:14px;
+  font-size:11px;
+  color:#9ab0c2;
+  flex:1
+}
+.ew-adjust input {
+  min-width:30px;
+  flex:1;
+  accent-color:#7db1d4
+}
+.ew-bottom {
+  display:grid;
+  grid-template-columns:minmax(0,1.7fr) minmax(160px,1fr);
+  border-top:1px solid #293c4f
+}
+.ew-parts,.ew-finish {
+  padding:14px 18px
+}
+.ew-finish {
+  border-left:1px solid #293c4f
+}
+.engine-workspace summary {
+  font-size:11px;
+  font-weight:600;
+  cursor:pointer;
+  user-select:none
+}
+.ew-parts summary span {
+  float:right;
+  font-size:9px;
+  font-weight:400;
+  color:#688397
+}
+.ew-part-list {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:5px;
+  margin:12px 0
+}
+.ew-part {
+  display:flex;
+  align-items:center;
+  gap:5px;
+  padding:4px;
+  border-radius:4px;
+  border:1px solid transparent;
+  min-width:0
+}
+.ew-part.ew-selected {
+  border-color:#506f87;
+  background:#1d3245
+}
+.ew-part input {
+  width:11px;
+  height:11px;
+  accent-color:#739bb4
+}
+.ew-part button {
+  font-size:10px;
+  text-align:left;
+  color:#9eb4c6;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+.ew-part-actions {
+  display:flex;
+  gap:12px
+}
+.ew-part-actions button {
+  font-size:10px;
+  color:#80adcd
+}
+.ew-inspector {
+  font-size:10px;
+  color:#86a0b4;
+  margin-top:10px;
+  line-height:1.5
+}
+.ew-inspector strong {
+  display:block;
+  color:#c1d5e3
+}
+.ew-finish label {
+  display:grid;
+  gap:6px;
+  font-size:10px;
+  color:#7893a7;
+  margin-top:14px
+}
+.ew-swatches {
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+  margin-top:10px
+}
+.ew-swatches button {
+  width:18px;
+  height:18px;
+  border-radius:50%;
+  border:2px solid #ffffff0d
+}
+.ew-swatches button[aria-pressed=true] {
+  outline:1px solid #c1deef;
+  outline-offset:2px
+}
+.ew-swatches input {
+  width:22px;
+  height:22px;
+  padding:0;
+  background:none;
+  border:0
+}
+.ew-finish p {
+  font-size:9px;
+  color:#58788f;
+  margin-top:10px
+}
+.ew-footer {
+  border-top:1px solid #26394b;
+  color:#617e93;
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  padding:10px 18px;
+  font-size:9px;
+  line-height:1.5
+}
+.ew-footer span:last-child {
+  white-space:nowrap
+}
+.ew-error {
+  position:absolute;
+  inset:0;
+  display:grid;
+  place-content:center;
+  padding:32px;
+  text-align:center;
+  color:#c5d7e3;
+  font-size:13px;
+  background:#101b28
+}
+.engine-workspace.ew-expanded {
+  position:fixed;
+  z-index:80;
+  inset:16px;
+  overflow:auto;
+  box-shadow:0 0 0 20px #030911ed
+}
+.ew-expanded .ew-stage {
+  height:calc(100vh - 330px);
+  min-height:360px
+}
+.ew-expanded .ew-bottom {
+  grid-template-columns:2fr 1fr
+}
+@media(max-width:700px) {
+  .ew-stage {
+    height:350px
+  }
+  .ew-bottom {
+    grid-template-columns:1fr
+  }
+  .ew-finish {
+    border-left:0;
+    border-top:1px solid #293c4f
+  }
+  .ew-part-list {
+    grid-template-columns:repeat(3,minmax(0,1fr))
+  }
+  .ew-header {
+    padding:16px
+  }
+  .ew-toolbar {
+    padding-left:16px;
+    padding-right:16px
+  }
+  .ew-footer {
+    flex-wrap:wrap
+  }
+  .ew-playback label {
+    margin-left:0
+  }
+  .engine-workspace.ew-expanded {
+    inset:6px
+  }
+  .ew-expanded .ew-bottom {
+    grid-template-columns:1fr
+  }
+}
+@media(prefers-reduced-motion:reduce) {
+  .ew-button {
+    transition:none
+  }
+}
