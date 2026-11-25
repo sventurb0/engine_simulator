@@ -18,8 +18,9 @@ type Props = {
 type StoredAppearance = Record<string, AssemblyAppearance>;
 const finishKey = 'apex-engine-finishes-v1';
 const defaultAppearance: AssemblyAppearance = { colour: '#9b3535', cover: 'ribbed' };
+const periodAppearance: AssemblyAppearance = { colour: '#9ba7ae', cover: 'classic' };
 const colours = [ ['Oxide red', '#9b3535'], ['Graphite', '#343c45'], ['Bare alloy', '#9ba7ae'], ['Racing green', '#285b49'], ['Cobalt', '#305f94'], ['Warm ivory', '#c4b899'] ];
-const hardwareKeys: (keyof SimConfig)[] = ['engineLayout','bore','stroke','compressionRatio','v8Crank','engineCycle','valvesPerCylinder','valvetrainLayout','sleeveValves','valveEvents','camDrive','intakeType','runnerLength','airCleaner','injectionType','headerType','exhaustType','silencerCount','applicationType','planeExhaust','marineExhaust','marineFiring','induction','turboFamily','turboCount','turboArchitecture','blowerType','superchargerDriveRatio','intercoolerType','icCoreSize'];
+const hardwareKeys: (keyof SimConfig)[] = ['engineLayout','bore','stroke','compressionRatio','v8Crank','engineCycle','valvesPerCylinder','valvetrainLayout','sleeveValves','valveEvents','camDrive','intakeType','runnerLength','airCleaner','injectionType','headerType','exhaustType','silencerCount','applicationType','planeExhaust','marineExhaust','marineFiring','marineCombustion','induction','turboFamily','turboCount','turboArchitecture','blowerType','superchargerDriveRatio','intercoolerType','icCoreSize','visualModel','intakeCamAdvanceDeg','acousticVtcMode'];
 
 export default function EngineWorkspace({ config, rpm, running, startCommand, onToggleRunning }: Props) {
   const host = useRef<HTMLDivElement>(null);
@@ -40,18 +41,20 @@ export default function EngineWorkspace({ config, rpm, running, startCommand, on
   });
   const identity = config.gameMeta?.name ?? 'Custom engine';
   const savedFinish = finishes?.[identity];
+  const baseAppearance = config.visualModel?.style === 'period' ? periodAppearance : defaultAppearance;
   const appearance: AssemblyAppearance = {
-    colour: savedFinish && /^#[0-9a-f]{6}$/i.test(savedFinish.colour) ? savedFinish.colour : defaultAppearance.colour,
-    cover: savedFinish && ['ribbed', 'smooth', 'classic'].includes(savedFinish.cover) ? savedFinish.cover : defaultAppearance.cover,
+    colour: savedFinish && /^#[0-9a-f]{6}$/i.test(savedFinish.colour) ? savedFinish.colour : baseAppearance.colour,
+    cover: savedFinish && ['ribbed', 'smooth', 'classic'].includes(savedFinish.cover) ? savedFinish.cover : baseAppearance.cover,
   };
   const key = JSON.stringify(hardwareKeys.map(k => config[k]));
   // Runtime changes update a ref; only hardware/finish changes rebuild geometry.
-  const plan = useMemo(() => planAssembly(config), [key]);
+  const plan = useMemo(() => planAssembly(config), [key, identity]);
   const live = useRef({ rpm, running, paused, speed, startCommand, config });
   live.current = { rpm, running, paused, speed, startCommand, config };
   const view = useRef<AssemblyView>({ mode, cut, axis, explode, hidden, selected });
   view.current = { mode, cut, axis, explode, hidden, selected };
   const commands = useRef<{ reset?: () => void; preset?: (view: 'front' | 'side' | 'top') => void; step?: () => void }>({});
+  const workspace = useRef<{ rebuild: (nextConfig: SimConfig, nextAppearance: AssemblyAppearance) => void } | null>(null);
 
   function finish(change: Partial<AssemblyAppearance>) {
     setFinishes(current => {
@@ -68,8 +71,9 @@ export default function EngineWorkspace({ config, rpm, running, startCommand, on
     return () => window.removeEventListener('keydown', escape);
   }, [expanded]);
   useEffect(() => {
-    const container = host.current;
-    if (!container) return;
+    const element = host.current;
+    if (!element) return;
+    const container: HTMLDivElement = element;
     setError('');
     let renderer: THREE.WebGLRenderer;
     try {
@@ -93,6 +97,13 @@ export default function EngineWorkspace({ config, rpm, running, startCommand, on
     controls.enableDamping = true; controls.dampingFactor = .09; controls.screenSpacePanning = true;
     controls.listenToKeyEvents(renderer.domElement);
     controls.minDistance = 1; controls.maxDistance = 90;
+    const recordCamera = () => {
+      // Read-only diagnostics for verifying orbit/pan/zoom persistence.
+      renderer.domElement.dataset.cameraPosition = camera.position.toArray().map(v => v.toFixed(6)).join(',');
+      renderer.domElement.dataset.cameraTarget = controls.target.toArray().map(v => v.toFixed(6)).join(',');
+      renderer.domElement.dataset.cameraZoom = camera.zoom.toFixed(6);
+    };
+    controls.addEventListener('change', recordCamera);
     const hemi = new THREE.HemisphereLight('#d8e9ff', '#343036', 1.8); scene.add(hemi);
     const keyLight = new THREE.DirectionalLight('#fff1de', 2.5); keyLight.position.set(5, 8, 4); scene.add(keyLight);
     const rim = new THREE.DirectionalLight('#7eb9e9', 2.2); rim.position.set(-6, 3, -6); scene.add(rim);
@@ -101,36 +112,66 @@ export default function EngineWorkspace({ config, rpm, running, startCommand, on
     const environment = pmrem.fromScene(environmentScene, .05);
     scene.environment = environment.texture;
     environmentScene.dispose(); pmrem.dispose();
-    const assembly = createEngineAssembly(config, appearance); scene.add(assembly.root);
-    const bounds = assembly.bounds;
-    const centre = bounds.getCenter(new THREE.Vector3());
-    const span = Math.max(...bounds.getSize(new THREE.Vector3()).toArray());
-    const grid = new THREE.GridHelper(Math.ceil(span * 2), 24, '#354657', '#1a2a38');
-    grid.position.y = bounds.min.y - plan.bore * .35; scene.add(grid);
-    const floor = new THREE.Mesh(new THREE.CircleGeometry(span * .65, 64), new THREE.MeshBasicMaterial({ color: '#111e2a', transparent: true, opacity: .65 }));
-    floor.rotation.x = -Math.PI / 2; floor.position.y = grid.position.y + .001; scene.add(floor);
+    let assembly: ReturnType<typeof createEngineAssembly> | null = null;
+    const centre = new THREE.Vector3();
+    let span = 1, bore = 1, hasFramed = false;
+    let grid: THREE.GridHelper | null = null;
+    let floor: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial> | null = null;
+    function removeGround() {
+      if (grid) {
+        scene.remove(grid); grid.geometry.dispose();
+        (Array.isArray(grid.material) ? grid.material : [grid.material]).forEach(m => m.dispose());
+      }
+      if (floor) { scene.remove(floor); floor.geometry.dispose(); floor.material.dispose(); }
+    }
     function frame(direction = new THREE.Vector3(1.25, .75, -1.35)) {
+      if (!assembly) return;
+      const damping = controls.enableDamping;
+      controls.enableDamping = false; controls.update();
       controls.target.copy(centre);
       const distance = span / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * Math.max(1, 1 / camera.aspect) * 1.22;
       camera.position.copy(centre).addScaledVector(direction.normalize(), distance);
-      controls.minDistance = plan.bore * .7; controls.maxDistance = distance * 5;
+      controls.minDistance = bore * .7; controls.maxDistance = distance * 5;
       controls.update();
+      controls.enableDamping = damping;
+      hasFramed = true;
     }
-    let firstResize = true;
-    const resize = new ResizeObserver(() => {
+    function sizeRenderer() {
       const width = container.clientWidth, height = container.clientHeight;
       if (!width || !height) return;
       renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix();
-      if (firstResize) { frame(); firstResize = false; }
-    });
+      if (!hasFramed) frame();
+    }
+    const resize = new ResizeObserver(sizeRenderer);
     resize.observe(container);
+    sizeRenderer();
+    workspace.current = {
+      rebuild(nextConfig, nextAppearance) {
+        // Keep the renderer, controls, camera and crank angle alive while only
+        // replacing geometry. Hardware edits must not move the user's viewpoint.
+        const nextAssembly = createEngineAssembly(nextConfig, nextAppearance);
+        if (assembly) { scene.remove(assembly.root); assembly.dispose(); }
+        assembly = nextAssembly; scene.add(assembly.root);
+        const bounds = assembly.bounds;
+        bounds.getCenter(centre);
+        span = Math.max(...bounds.getSize(new THREE.Vector3()).toArray());
+        bore = assembly.plan.bore;
+        removeGround();
+        grid = new THREE.GridHelper(Math.ceil(span * 2), 24, '#354657', '#1a2a38');
+        grid.position.y = bounds.min.y - bore * .35; scene.add(grid);
+        floor = new THREE.Mesh(new THREE.CircleGeometry(span * .65, 64), new THREE.MeshBasicMaterial({ color: '#111e2a', transparent: true, opacity: .65 }));
+        floor.rotation.x = -Math.PI / 2; floor.position.y = grid.position.y + .001; scene.add(floor);
+        if (!hasFramed && container.clientWidth && container.clientHeight) frame();
+      },
+    };
     let angle = 0;
     commands.current = {
       reset: () => frame(),
       preset: name => frame(name === 'front' ? new THREE.Vector3(0, .05, -1) : name === 'top' ? new THREE.Vector3(0, 1, -.001) : new THREE.Vector3(1, .05, 0)),
       step: () => { angle += Math.PI / 12; },
     };
-    const cycle = new EngineStartCycle(config);
+    let cycle = new EngineStartCycle(config);
+    let cycleIdentity = config.gameMeta?.name ?? 'Custom engine';
     let command = startCommand;
     if (command?.action === 'stop') { cycle.state = 'stopped'; cycle.rpm = 0; }
     let visible = true, last = performance.now(), lastStats = 0, frameId = 0;
@@ -140,6 +181,7 @@ export default function EngineWorkspace({ config, rpm, running, startCommand, on
     let down = { x: 0, y: 0 };
     const pointerDown = (e: PointerEvent) => { down = { x: e.clientX, y: e.clientY }; };
     const pointerUp = (e: PointerEvent) => {
+      if (!assembly) return;
       if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5 || e.button !== 0) return;
       const rect = renderer.domElement.getBoundingClientRect();
       raycaster.setFromCamera(new THREE.Vector2((e.clientX - rect.left) / rect.width * 2 - 1, -(e.clientY - rect.top) / rect.height * 2 + 1), camera);
@@ -160,10 +202,17 @@ export default function EngineWorkspace({ config, rpm, running, startCommand, on
     function render(now: number) {
       frameId = requestAnimationFrame(render);
       const dt = Math.min(.05, Math.max(0, (now - last) / 1000)); last = now;
-      if (!visible || document.hidden) return;
+      if (!visible || document.hidden || !assembly) return;
       const state = live.current;
+      const nextIdentity = state.config.gameMeta?.name ?? 'Custom engine';
+      if (nextIdentity !== cycleIdentity) {
+        cycleIdentity = nextIdentity;
+        // Audio starts a new cycle for a different named engine. Keep the last
+        // command token so an old ignition cut/start is not replayed on a swap.
+        cycle = new EngineStartCycle(state.config);
+      }
       let modelRpm = state.rpm;
-      if (config.applicationType === 'plane') {
+      if (state.config.applicationType === 'plane') {
         cycle.config = state.config;
         if (state.startCommand !== command) {
           command = state.startCommand;
@@ -180,16 +229,19 @@ export default function EngineWorkspace({ config, rpm, running, startCommand, on
     }
     frameId = requestAnimationFrame(render);
     return () => {
-      cancelAnimationFrame(frameId); resize.disconnect(); intersection.disconnect(); controls.dispose();
+      cancelAnimationFrame(frameId); resize.disconnect(); intersection.disconnect();
+      controls.removeEventListener('change', recordCamera); controls.dispose();
       renderer.domElement.removeEventListener('pointerdown', pointerDown);
       renderer.domElement.removeEventListener('pointerup', pointerUp);
       renderer.domElement.removeEventListener('webglcontextlost', contextLost);
-      assembly.dispose(); grid.geometry.dispose();
-      (Array.isArray(grid.material) ? grid.material : [grid.material]).forEach(m => m.dispose());
-      floor.geometry.dispose(); floor.material.dispose(); environment.dispose();
+      assembly?.dispose(); removeGround(); environment.dispose();
       renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove(); commands.current = {};
+      workspace.current = null;
     };
-  }, [key, appearance.colour, appearance.cover]);
+  }, []);
+  useEffect(() => {
+    workspace.current?.rebuild(config, appearance);
+  }, [key, identity, appearance.colour, appearance.cover]);
 
   const selectedPart = plan.parts.find(p => p.id === selected);
   const button = (active = false) => `ew-button${active ? ' ew-active' : ''}`;
