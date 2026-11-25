@@ -48,6 +48,8 @@ type FiringSoundMode = "stock" | "even" | "crossplane_i4" | "bigbang_i4" | "cp3_
 type ApplicationType = "car" | "plane" | "boat";
 
 export type SimConfig = {
+  // Visual construction metadata; does not change the power or acoustic solver.
+  visualModel?: { orientation?: 'upright' | 'inverted'; cooling?: 'air' | 'water'; style?: 'modern' | 'period' };
   engineCycle?: "four" | "two";
   marineCombustion?: "spark" | "hot_bulb";
   marineExhaust?: "dry" | "wet";
@@ -596,6 +598,11 @@ function sanitizeConfig(config: Partial<SimConfig>): SimConfig {
   return {
     ...defaultConfig,
     ...config,
+    visualModel: config.visualModel && typeof config.visualModel === 'object' ? {
+      orientation: coerceOption(config.visualModel.orientation, ['upright','inverted'] as const, 'upright'),
+      cooling: coerceOption(config.visualModel.cooling, ['air','water'] as const, 'water'),
+      style: coerceOption(config.visualModel.style, ['modern','period'] as const, 'modern'),
+    } : undefined,
     applicationType: coerceOption(config.applicationType,["car","plane","boat"] as const,"car"),
     engineCycle: config.applicationType==='boat'&&config.engineCycle==='two'?'two':'four',
     marineCombustion: config.marineCombustion==='hot_bulb'?'hot_bulb':'spark',
